@@ -37,7 +37,8 @@ const char *VALID_PROVIDERS[] = {
   "SILICONFLOW",
   "COHERE",
   "HUNYUAN-OPENAI",
-  "OPENAI"
+  "OPENAI",
+  "OLLAMA"
 };
 
 #define EXTRACT_JSON_ELEM_STR(json_key, member) \
@@ -80,6 +81,7 @@ int ObAiModelEndpointInfo::deep_copy(
   int ret = OB_SUCCESS;
   reset();
   endpoint_id_ = other.endpoint_id_;
+  max_concurrency_ = other.max_concurrency_;
   if (OB_FAIL(ob_write_string(allocator, other.name_, name_))) {
   } else if (OB_FAIL(ob_write_string(allocator, other.scope_, scope_))) {
   } else if (OB_FAIL(ob_write_string(allocator, other.ai_model_name_, ai_model_name_))) {
@@ -112,7 +114,7 @@ int ObAiModelEndpointInfo::check_valid() const
   } else if (url_.empty()) {
     ret = OB_AI_FUNC_PARAM_EMPTY;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_EMPTY, strlen("url"), "url");
-  } else if (access_key_.empty()) {
+  } else if (access_key_.empty() && provider_.case_compare("OLLAMA") != 0) {
     ret = OB_AI_FUNC_PARAM_EMPTY;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_EMPTY, strlen("access_key"), "access_key");
     LOG_WARN("access_key is empty", K(ret), K(*this));
@@ -122,6 +124,9 @@ int ObAiModelEndpointInfo::check_valid() const
   } else if (!is_valid_provider(provider_)) {
     ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("provider"), "provider");
+  } else if (max_concurrency_ < 1 || max_concurrency_ > 1024) {
+    ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
+    LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("max_concurrency"), "max_concurrency");
   } else if (!parameters_.empty()) {
     ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
     LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, strlen("parameters"), "parameters");
@@ -156,16 +161,52 @@ int ObAiModelEndpointInfo::merge_delta_endpoint(common::ObArenaAllocator &alloca
     ObJsonObjPair elem;
     if (OB_FAIL(iter.get_elem(elem))) {
     } else {
-      EXTRACT_JSON_ELEM_STR("scope", scope_)
-      EXTRACT_JSON_ELEM_STR("ai_model_name", ai_model_name_)
-      EXTRACT_JSON_ELEM_STR("url", url_)
-      EXTRACT_JSON_ELEM_STR_WITH_PROCESS("access_key", access_key_, has_api_key = true)
-      EXTRACT_JSON_ELEM_STR("provider", provider_)
-      EXTRACT_JSON_ELEM_STR("request_model_name", request_model_name_)
-      EXTRACT_JSON_ELEM_STR("parameters", parameters_)
-      EXTRACT_JSON_ELEM_STR("request_transform_fn", request_transform_fn_)
-      EXTRACT_JSON_ELEM_STR("response_transform_fn", response_transform_fn_)
-      EXTRACT_JSON_ELEM_END()
+      auto assign_string = [&](ObString &member) {
+        int tmp_ret = OB_SUCCESS;
+        if (elem.second->json_type() != ObJsonNodeType::J_STRING) {
+          tmp_ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
+          LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, elem.first.length(), elem.first.ptr());
+        } else {
+          member = ObString(elem.second->get_data_length(), elem.second->get_data());
+        }
+        return tmp_ret;
+      };
+      if (elem.first.case_compare("scope") == 0) {
+        ret = assign_string(scope_);
+      } else if (elem.first.case_compare("ai_model_name") == 0) {
+        ret = assign_string(ai_model_name_);
+      } else if (elem.first.case_compare("url") == 0) {
+        ret = assign_string(url_);
+      } else if (elem.first.case_compare("access_key") == 0) {
+        ret = assign_string(access_key_);
+        if (OB_SUCC(ret)) {
+          has_api_key = true;
+        }
+      } else if (elem.first.case_compare("provider") == 0) {
+        ret = assign_string(provider_);
+      } else if (elem.first.case_compare("request_model_name") == 0) {
+        ret = assign_string(request_model_name_);
+      } else if (elem.first.case_compare("parameters") == 0) {
+        ret = assign_string(parameters_);
+      } else if (elem.first.case_compare("request_transform_fn") == 0) {
+        ret = assign_string(request_transform_fn_);
+      } else if (elem.first.case_compare("response_transform_fn") == 0) {
+        ret = assign_string(response_transform_fn_);
+      } else if (elem.first.case_compare("max_concurrency") == 0) {
+        if (elem.second->json_type() != ObJsonNodeType::J_INT) {
+          ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
+          LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, elem.first.length(), elem.first.ptr());
+        } else {
+          max_concurrency_ = elem.second->get_int();
+          if (max_concurrency_ < 1 || max_concurrency_ > 1024) {
+            ret = OB_AI_FUNC_PARAM_VALUE_INVALID;
+            LOG_USER_ERROR(OB_AI_FUNC_PARAM_VALUE_INVALID, elem.first.length(), elem.first.ptr());
+          }
+        }
+      } else {
+        ret = OB_AI_FUNC_PARAM_INVALID;
+        LOG_USER_ERROR(OB_AI_FUNC_PARAM_INVALID, elem.first.length(), elem.first.ptr());
+      }
     }
     iter.next();
   }
@@ -221,7 +262,9 @@ EndpointType::TYPE EndpointType::str_to_endpoint_type(const ObString &type_str)
 int ObAiModelEndpointInfo::get_unencrypted_access_key(common::ObIAllocator &allocator, ObString &unencrypted_access_key) const
 {
   int ret = OB_SUCCESS;
-  if (OB_FAIL(decrypt_access_key_(allocator, access_key_, unencrypted_access_key))) {
+  if (access_key_.empty()) {
+    unencrypted_access_key.reset();
+  } else if (OB_FAIL(decrypt_access_key_(allocator, access_key_, unencrypted_access_key))) {
   }
   return ret;
 }
