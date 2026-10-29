@@ -25,6 +25,7 @@
 #include "sql/plan_cache/ob_pcv_set.h"
 #include "sql/ob_sql_init.h"
 #include "sql/resolver/ob_resolver.h"
+#include "sql/resolver/ddl/ob_explain_stmt.h"
 #include "sql/resolver/cmd/ob_variable_set_stmt.h"
 #include "sql/resolver/cmd/ob_call_procedure_stmt.h"
 #include "sql/resolver/cmd/ob_anonymous_block_stmt.h"
@@ -281,7 +282,18 @@ int ObSql::fill_result_set(ObResultSet &result_set,
       field.type_.set_collation_type(CS_TYPE_UTF8MB4_GENERAL_CI);
       field.type_.set_collation_level(CS_LEVEL_IMPLICIT);
       field.type_.set_varchar(type_name);
-      if (OB_FAIL(result_set.reserve_field_columns(1))) {
+      const ObExplainStmt &explain_stmt = static_cast<const ObExplainStmt &>(basic_stmt);
+      if (explain_stmt.is_describe_query()) {
+        static const char *names[] = {"column_name", "column_type", "null", "key", "default", "extra"};
+        if (OB_FAIL(result_set.reserve_field_columns(6))) {
+        }
+        for (int64_t i = 0; OB_SUCC(ret) && i < 6; ++i) {
+          field.cname_ = ObString::make_string(names[i]);
+          field.org_cname_ = field.cname_;
+          if (OB_FAIL(result_set.add_field_column(field))) {
+          }
+        }
+      } else if (OB_FAIL(result_set.reserve_field_columns(1))) {
       } else if (OB_FAIL(result_set.add_field_column(field))) {
       }
       break;

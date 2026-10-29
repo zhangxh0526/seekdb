@@ -43,6 +43,7 @@ int ObExplainResolver::resolve(const ParseNode &parse_tree)
     ObStmt *child_stmt = NULL;
     ObExplainDisplayOpt opt;
     opt.with_tree_line_ = true;
+    explain_stmt->set_describe_query(parse_tree.reserved_ != 0);
     if (OB_ISNULL(child_node)) {
       ret = OB_ERR_UNEXPECTED;
       LOG_WARN("empty parse tree for stmt");

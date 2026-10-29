@@ -18,6 +18,7 @@
 #include "sql/optimizer/ob_explain_log_plan.h"
 #include "sql/optimizer/ob_log_values.h"
 #include "sql/code_generator/ob_code_generator.h"
+#include "sql/engine/basic/ob_file_sql_reader.h"
 
 using namespace oceanbase;
 using namespace sql;
@@ -44,6 +45,98 @@ int ObExplainLogPlan::generate_normal_raw_plan()
     ObLogValues *values_op = NULL;
     int64_t batch_size = 0;
     const ObExplainStmt *explain_stmt = static_cast<const ObExplainStmt*>(get_stmt());
+    if (explain_stmt->is_describe_query()) {
+      const ObSelectStmt *select_stmt = dynamic_cast<const ObSelectStmt *>(explain_stmt->get_explain_query_stmt());
+      if (OB_ISNULL(select_stmt)) {
+        ret = OB_NOT_SUPPORTED;
+        LOG_USER_ERROR(OB_NOT_SUPPORTED, "DESCRIBE for a non-SELECT statement");
+      } else if (OB_FAIL(allocate_values_as_top(top)) || OB_ISNULL(top) || LOG_VALUES != top->get_type()) {
+        if (OB_SUCC(ret)) ret = OB_ERR_UNEXPECTED;
+      } else {
+        set_plan_root(top);
+        top->mark_is_plan_root();
+        values_op = static_cast<ObLogValues *>(top);
+      }
+      for (int64_t i = 0; OB_SUCC(ret) && i < select_stmt->get_select_item_size(); ++i) {
+        const SelectItem &item = select_stmt->get_select_item(i);
+        if (OB_ISNULL(item.expr_)) {
+          ret = OB_ERR_UNEXPECTED;
+          break;
+        }
+        const char *type_name = "VARCHAR";
+        switch (item.expr_->get_data_type()) {
+          case ObTinyIntType: case ObSmallIntType: case ObMediumIntType: case ObInt32Type: case ObIntType:
+          case ObUTinyIntType: case ObUSmallIntType: case ObUMediumIntType: case ObUInt32Type: case ObUInt64Type:
+          case ObYearType:
+            type_name = "BIGINT";
+            break;
+          case ObFloatType: case ObDoubleType: case ObUFloatType: case ObUDoubleType:
+            type_name = "DOUBLE";
+            break;
+          case ObDateType: case ObMySQLDateType:
+            type_name = "DATE";
+            break;
+          case ObDateTimeType: case ObMySQLDateTimeType:
+            type_name = "DATETIME";
+            break;
+          case ObTimestampType: case ObTimestampNanoType:
+            type_name = "TIMESTAMP";
+            break;
+          default:
+            break;
+        }
+        if (item.expr_->is_column_ref_expr()) {
+          const ObColumnRefRawExpr &column = *static_cast<const ObColumnRefRawExpr *>(item.expr_);
+          const TableItem *table_item = select_stmt->get_table_item_by_id(column.get_table_id());
+          if (OB_NOT_NULL(table_item) && table_item->is_file_table_) {
+            const ObConstRawExpr *descriptor = dynamic_cast<const ObConstRawExpr *>(table_item->function_table_expr_);
+            file_sql::Request request;
+            file_sql::Table file_table;
+            file_sql::Error error;
+            ObString serialized;
+            if (OB_ISNULL(descriptor)) {
+              ret = OB_ERR_UNEXPECTED;
+            } else if (FALSE_IT(serialized = descriptor->get_value().get_string())) {
+            } else if (!request.deserialize(std::string(serialized.ptr(), serialized.length())) ||
+                       column.get_column_id() < OB_APP_MIN_COLUMN_ID) {
+              ret = OB_ERR_UNEXPECTED;
+            } else if (file_sql::read_table(request, file_table, error) != 0) {
+              ret = OB_INVALID_ARGUMENT;
+            } else {
+              uint64_t index = column.get_column_id() - OB_APP_MIN_COLUMN_ID;
+              if (index >= file_table.columns_.size()) {
+                ret = OB_ERR_UNEXPECTED;
+              } else if (file_sql::ColumnType::BOOLEAN == file_table.columns_[index].type_) {
+                type_name = "BOOLEAN";
+              }
+            }
+          }
+        }
+        ObObj cells[6];
+        const ObString &name = item.alias_name_.empty() ? item.expr_name_ : item.alias_name_;
+        cells[0].set_varchar(name);
+        cells[1].set_varchar(type_name);
+        cells[2].set_varchar(item.expr_->is_not_null_for_read() ? "NO" : "YES");
+        for (int col = 0; col < 3; ++col) cells[col].set_collation_type(ObCharset::get_system_collation());
+        ObNewRow row;
+        row.cells_ = cells;
+        row.count_ = 6;
+        if (OB_FAIL(values_op->add_row(row))) {
+        }
+      }
+      if (OB_SUCC(ret)) {
+        values_op->set_op_id(0);
+        set_max_op_id(1);
+      }
+      get_optimizer_context().get_all_exprs().reuse();
+      if (OB_FAIL(ret)) {
+      } else if (OB_FAIL(allocate_output_expr_for_values_op(*values_op))) {
+      } else {
+        get_optimizer_context().set_plan_type(ObPhyPlanType::OB_PHY_PLAN_LOCAL,
+                                              ObPhyPlanType::OB_PHY_PLAN_LOCAL, false);
+      }
+      return ret;
+    }
     if (OB_ISNULL(child_stmt = explain_stmt->get_explain_query_stmt())) {
       ret = OB_ERR_UNEXPECTED;
     } else if (OB_ISNULL(child_plan = optimizer_context_.get_log_plan_factory().

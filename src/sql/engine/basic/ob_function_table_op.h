@@ -20,6 +20,7 @@
 #include "sql/engine/ob_operator.h"
 #include "sql/engine/basic/ob_chunk_datum_store.h"
 #include "lib/charset/ob_charset.h"
+#include "sql/engine/basic/ob_file_sql_reader.h"
 
 namespace oceanbase
 {
@@ -32,11 +33,13 @@ class ObFunctionTableSpec : public ObOpSpec
 OB_UNIS_VERSION_V(1);
 public:
   ObFunctionTableSpec(common::ObIAllocator &alloc, const ObPhyOperatorType type)
-    : ObOpSpec(alloc, type), value_expr_(nullptr), column_exprs_(alloc), has_correlated_expr_(false)
+    : ObOpSpec(alloc, type), value_expr_(nullptr), column_exprs_(alloc), has_correlated_expr_(false),
+      is_file_table_(false)
   {}
   ObExpr *value_expr_;
   common::ObFixedArray<ObExpr*, common::ObIAllocator> column_exprs_;
   bool has_correlated_expr_;
+  bool is_file_table_;
 };
 
 class ObFunctionTableOp : public ObOperator
@@ -48,7 +51,8 @@ public:
     already_calc_(false),
     row_count_(0),
     col_count_(0),
-    value_table_(NULL) 
+    value_table_(NULL),
+    file_row_idx_(0)
   {}
 
   virtual int inner_open() override;
@@ -60,6 +64,7 @@ public:
 private:
   int inner_get_next_row_udf();
   int inner_get_next_row_sys_func();
+  int inner_get_next_row_file();
   int get_current_result(common::ObObj &result);
   int64_t node_idx_;
   bool already_calc_;
@@ -67,6 +72,8 @@ private:
   int64_t col_count_;
   common::ObObj value_;
   pl::ObPLCollection *value_table_;
+  file_sql::Table file_table_;
+  int64_t file_row_idx_;
   int (ObFunctionTableOp::*next_row_func_)();
 };
 

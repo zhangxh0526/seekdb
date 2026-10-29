@@ -197,6 +197,9 @@ int ObResolverUtils::check_function_table_column_exist(const TableItem &table_it
   int ret = OB_SUCCESS;
   ObSEArray<ObString, 16> column_names;
   bool exist = false;
+  if (table_item.is_file_table_) {
+    return ret;
+  }
   OZ (get_all_function_table_column_names(table_item, params, column_names));
   for (int64_t i = 0; OB_SUCC(ret) && i < column_names.count(); ++i) {
     if (ObCharset::case_insensitive_equal(column_names.at(i), column_name)) {
