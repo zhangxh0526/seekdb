@@ -285,6 +285,10 @@ if(OB_AIO AND OB_AIO STREQUAL "libaio1t64" AND NOT APPLE)
     list(APPEND AIO_SEARCH_PATHS /usr/lib/aarch64-linux-gnu)
   endif()
   list(APPEND AIO_SEARCH_PATHS /usr/lib)
+  if(DEFINED ENV{LIBRARY_PATH})
+    string(REPLACE ":" ";" AIO_ENV_LIBRARY_PATHS "$ENV{LIBRARY_PATH}")
+    list(APPEND AIO_SEARCH_PATHS ${AIO_ENV_LIBRARY_PATHS})
+  endif()
   find_library(AIO_LIBRARY
     NAMES libaio.so.1t64
     PATHS ${AIO_SEARCH_PATHS}
@@ -294,7 +298,7 @@ if(OB_AIO AND OB_AIO STREQUAL "libaio1t64" AND NOT APPLE)
     set(LIBAIO_LINK_OPTION "${AIO_LIBRARY}")
     message(STATUS "Ubuntu ${DEBIAN_VERSION} detected, using ${OB_AIO} package and linking to ${AIO_LIBRARY}")
   else()
-    # Fallback to lib: format if library not found at expected paths
+    # Fallback to lib: format if library not found at configured and system paths
     # This lets the linker search for libaio.so.1t64 in system library paths
     set(LIBAIO_LINK_OPTION "lib:libaio.so.1t64")
     message(STATUS "Ubuntu ${DEBIAN_VERSION} detected, using ${OB_AIO} package and lib:libaio.so.1t64")
