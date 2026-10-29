@@ -2241,6 +2241,7 @@ int ObLogPlan::allocate_function_table_path(FunctionTablePath *func_table_path,
     op->set_table_id(func_table_path->table_id_);
     op->add_values_expr(func_table_path->value_expr_);
     op->set_table_name(table_item->get_table_name());
+    op->set_file_table(table_item->is_file_table_);
     if (OB_FAIL(append(op->get_filter_exprs(), func_table_path->filter_))) {
     } else if (OB_FAIL(op->compute_property(func_table_path))) {
     } else if (OB_FAIL(op->pick_out_startup_filters())) {
@@ -10341,24 +10342,26 @@ int ObLogPlan::allocate_output_expr_for_values_op(ObLogicalOperator &values_op)
   if (OB_ISNULL(optimizer_context_.get_session_info())) {
     ret = OB_ERR_UNEXPECTED;
   } else {
-    // Static typing engine need expr to output rows. We generate a const output expr
-    // for values_op operator.
-    ObConstRawExpr *output = NULL;
-    if (OB_FAIL(optimizer_context_.get_expr_factory().create_raw_expr(T_VARCHAR, output))) {
-    } else {
-      ObObj v;
-      v.set_varchar(" ");
-      v.set_collation_type(ObCharset::get_system_collation());
-      output->set_value(v);
-      if (OB_FAIL(output->formalize(optimizer_context_.get_session_info()))) {
-      } else if (OB_FAIL(values_op.get_output_exprs().push_back(output))) {
+    int64_t output_count = static_cast<ObLogValues &>(values_op).get_col_count();
+    if (output_count <= 0) output_count = 1;
+    for (int64_t i = 0; OB_SUCC(ret) && i < output_count; ++i) {
+      ObConstRawExpr *output = NULL;
+      if (OB_FAIL(optimizer_context_.get_expr_factory().create_raw_expr(T_VARCHAR, output))) {
       } else {
-        values_op.set_branch_id(0);
-        values_op.set_id(0);
-        values_op.set_op_id(0);
-        if (OB_FAIL(get_optimizer_context().get_all_exprs().append(output))) {
-        } else { /*do nothing*/ }
+        ObObj v;
+        v.set_varchar(" ");
+        v.set_collation_type(ObCharset::get_system_collation());
+        output->set_value(v);
+        if (OB_FAIL(output->formalize(optimizer_context_.get_session_info()))) {
+        } else if (OB_FAIL(values_op.get_output_exprs().push_back(output))) {
+        } else if (OB_FAIL(get_optimizer_context().get_all_exprs().append(output))) {
+        }
       }
+    }
+    if (OB_SUCC(ret)) {
+      values_op.set_branch_id(0);
+      values_op.set_id(0);
+      values_op.set_op_id(0);
     }
   }
   return ret;

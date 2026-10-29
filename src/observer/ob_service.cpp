@@ -158,7 +158,8 @@ ObService::ObService(
     gctx_(gctx),
     change_stream_service_(change_stream_service),
     schema_release_task_(),
-    telemetry_task_()
+    telemetry_task_(),
+    ai_column_worker_()
 {
 }
 
@@ -199,6 +200,8 @@ int ObService::init(common::ObMySQLProxy &sql_proxy)
     FLOG_WARN("init tsc timestamp failed", KR(ret));
   } else if (OB_FAIL(schema_release_task_.init(schema_updater_))) {
     FLOG_WARN("init schema release task failed", KR(ret));
+  } else if (OB_FAIL(ai_column_worker_.init(sql_proxy))) {
+    FLOG_WARN("init AI column worker failed", KR(ret));
   } else {
     inited_ = true;
   }
@@ -216,6 +219,8 @@ int ObService::start()
   if (!inited_) {
     ret = OB_NOT_INIT;
     FLOG_WARN("ob_service is not inited", KR(ret), K_(inited));
+  } else if (OB_FAIL(ai_column_worker_.start())) {
+    FLOG_WARN("start AI column worker failed", KR(ret));
   }
   FLOG_INFO("[OBSERVICE_NOTICE] start ob_service end", KR(ret));
   if (OB_FAIL(ret)) {
@@ -242,6 +247,7 @@ void ObService::stop()
 
     stopped_ = true;
 
+    ai_column_worker_.stop();
     FLOG_INFO("begin to stop schema release task");
     schema_release_task_.stop();
     FLOG_INFO("schema release task stopped");
@@ -259,6 +265,7 @@ void ObService::wait()
   if (!inited_) {
     LOG_WARN_RET(OB_NOT_INIT, "ob_service not init", K_(inited));
   } else {
+    ai_column_worker_.wait();
     FLOG_INFO("begin to wait schema release task");
     schema_release_task_.wait();
     FLOG_INFO("wait schema release task success");
@@ -277,6 +284,7 @@ int ObService::destroy()
   if (!inited_) {
     ret = OB_NOT_INIT;
   } else {
+    ai_column_worker_.destroy();
     FLOG_INFO("begin to destroy schema release task");
     schema_release_task_.destroy();
     FLOG_INFO("schema release task destroyed");

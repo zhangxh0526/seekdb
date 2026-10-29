@@ -20,6 +20,7 @@ SQL_UNITY_GROUPS = [
         name = "ob_sql_common_0",
         language = "c++",
         srcs = [
+            "src/sql/ai_column/ob_ai_column_util.cpp",
             "src/sql/ob_end_trans_callback.cpp",
             "src/sql/ob_end_trans_cb_packet_param.cpp",
             "src/sql/ob_phy_table_location.cpp",
@@ -225,6 +226,7 @@ SQL_UNITY_GROUPS = [
             "src/sql/engine/basic/ob_chunk_row_store.cpp",
             "src/sql/engine/basic/ob_expr_values_op.cpp",
             "src/sql/engine/basic/ob_function_table_op.cpp",
+            "src/sql/engine/basic/ob_file_sql_reader.cpp",
             "src/sql/engine/basic/ob_group_join_buffer.cpp",
             "src/sql/engine/basic/ob_hash_partitioning_infrastructure_op.cpp",
             "src/sql/engine/basic/ob_json_table_op.cpp",

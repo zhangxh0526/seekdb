@@ -25,6 +25,7 @@
 #include "sql/optimizer/ob_optimizer_util.h"
 #include "query/vector/ob_vector_index_util.h"
 #include "sql/resolver/ddl/ob_vec_index_builder_util.h"
+#include "sql/ai_column/ob_ai_column_util.h"
 
 namespace oceanbase
 {
@@ -633,6 +634,7 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
     // Store the column schema after resolve_column_definition in resolved_cols
     // To support generating columns in any order, all column_schema are generated first and then uniformly stored in table_schema
     ObSEArray<ObColumnSchemaV2, SEARRAY_INIT_NUM> resolved_cols;
+    ObSEArray<uint64_t, 8> ai_column_ids;
     // Resolve column names with the runtime name-case mode.
     //RESOLVE_NON_COL needs to add the columns in the query to stats in order to resolve PK constraint information etc.
     if (OB_FAIL(ret)) {
@@ -832,6 +834,9 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
                 ret = OB_SUCCESS;
               }
             }
+            if (OB_SUCC(ret) && ObAIColumnUtil::is_ai_column(column)) {
+              ret = ai_column_ids.push_back(column.get_column_id());
+            }
           }
 
           if (OB_SUCC(ret) && !column.is_invisible_column()) {
@@ -920,6 +925,22 @@ int ObCreateTableResolver::resolve_table_elements(const ParseNode *node,
       if (OB_SUCC(ret) && !has_non_hidden_column) {
         ret = OB_ERR_AT_LEAST_ONE_COLUMN_NOT_VIRTUAL;
         SQL_RESV_LOG(WARN, "table must have at least one column that is not hidden", K(ret));
+      }
+    }
+
+    if (OB_SUCC(ret) && RESOLVE_NON_COL != resolve_rule) {
+      for (int64_t i = 0; OB_SUCC(ret) && i < ai_column_ids.count(); ++i) {
+        const ObColumnSchemaV2 *column = table_schema.get_column_schema(ai_column_ids.at(i));
+        if (OB_ISNULL(column)) {
+          ret = OB_ERR_UNEXPECTED;
+        }
+        for (int64_t hidden_index = 0; OB_SUCC(ret) && hidden_index < 3; ++hidden_index) {
+          ObColumnSchemaV2 hidden_column;
+          if (OB_FAIL(ObAIColumnUtil::make_hidden_column(*column, hidden_index, hidden_column))) {
+          } else if (FALSE_IT(hidden_column.set_column_id(gen_column_id()))) {
+          } else if (OB_FAIL(table_schema.add_column(hidden_column))) {
+          }
+        }
       }
     }
 

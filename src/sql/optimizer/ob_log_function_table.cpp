@@ -103,6 +103,7 @@ int ObLogFunctionTable::get_plan_item_info(PlanText &plan_text,
 uint64_t ObLogFunctionTable::hash(uint64_t seed) const
 {
   seed = do_hash(table_name_, seed);
+  seed = do_hash(is_file_table_, seed);
   seed = ObLogicalOperator::hash(seed);
   return seed;
 }

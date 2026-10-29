@@ -30,7 +30,8 @@ public:
         table_id_(OB_INVALID_ID),
         value_expr_(NULL),
         table_name_(),
-        access_exprs_() { }
+        access_exprs_(),
+        is_file_table_(false) { }
   virtual ~ObLogFunctionTable() {}
   void add_values_expr(ObRawExpr* expr) { value_expr_ = expr; }
   const ObRawExpr* get_value_expr() const { return value_expr_; }
@@ -43,6 +44,8 @@ public:
   virtual int allocate_expr_post(ObAllocExprContext &ctx) override;
   void set_table_id(uint64_t table_id) { table_id_ = table_id; }
   uint64_t get_table_id() const { return table_id_; }
+  void set_file_table(bool value) { is_file_table_ = value; }
+  bool is_file_table() const { return is_file_table_; }
   /**
    *  Get table name
    */
@@ -56,6 +59,7 @@ private:
   ObRawExpr* value_expr_;
   common::ObString table_name_;
   common::ObSEArray<ObRawExpr*, 4, common::ModulePageAllocator, true> access_exprs_;
+  bool is_file_table_;
   DISALLOW_COPY_AND_ASSIGN(ObLogFunctionTable);
 };
 }

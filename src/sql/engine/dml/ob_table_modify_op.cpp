@@ -21,6 +21,8 @@
 #include "query/session/ob_inner_sql_connection_access.h"
 #include "sql/engine/ob_physical_plan.h"
 #include "sql/engine/dml/ob_dml_service.h"
+#include "sql/ai_column/ob_ai_column_util.h"
+#include "share/inner_table/ob_inner_table_schema_constants.h"
 
 namespace oceanbase
 {
@@ -1084,6 +1086,144 @@ int ObTableModifyOp::discharge_das_write_buffer()
   return ret;
 }
 
+namespace
+{
+int ai_append_identifier(ObSqlString &sql, const ObString &name)
+{
+  int ret = OB_SUCCESS;
+  if (OB_FAIL(sql.append("`"))) {
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < name.length(); ++i) {
+      if (name.ptr()[i] == '`') {
+        ret = sql.append("``");
+      } else {
+        ret = sql.append(name.ptr() + i, 1);
+      }
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ret = sql.append("`");
+  }
+  return ret;
+}
+
+int ai_build_rowkey_expr(const ObTableSchema &table_schema,
+                         const ObString &alias,
+                         ObSqlString &expr)
+{
+  int ret = OB_SUCCESS;
+  ObSEArray<uint64_t, 8> rowkey_ids;
+  if (OB_FAIL(table_schema.get_rowkey_column_ids(rowkey_ids))) {
+  } else if (rowkey_ids.empty()) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(expr.append("CONCAT_WS(' AND ', "))) {
+  }
+  for (int64_t i = 0; OB_SUCC(ret) && i < rowkey_ids.count(); ++i) {
+    const ObColumnSchemaV2 *column = table_schema.get_column_schema(rowkey_ids.at(i));
+    if (OB_ISNULL(column)) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (i > 0 && OB_FAIL(expr.append(", "))) {
+    } else if (OB_FAIL(expr.append("CONCAT('`"))) {
+    } else if (OB_FAIL(expr.append(column->get_column_name_str()))) {
+    } else if (OB_FAIL(expr.append("` = ', "))) {
+    } else if (!ob_is_numeric_type(column->get_data_type()) && OB_FAIL(expr.append("QUOTE("))) {
+    }
+    if (OB_FAIL(ret)) {
+    } else if (!alias.empty() && OB_FAIL(ai_append_identifier(expr, alias))) {
+    } else if (!alias.empty() && OB_FAIL(expr.append("."))) {
+    }
+    if (OB_FAIL(ret)) {
+    } else if (OB_FAIL(ai_append_identifier(expr, column->get_column_name_str()))) {
+    } else if (!ob_is_numeric_type(column->get_data_type()) && OB_FAIL(expr.append(")"))) {
+    } else if (OB_FAIL(expr.append(")"))) {
+    }
+  }
+  if (OB_SUCC(ret)) {
+    ret = expr.append(")");
+  }
+  return ret;
+}
+}
+
+int ObTableModifyOp::process_ai_column_tasks()
+{
+  int ret = OB_SUCCESS;
+  uint64_t table_loc_id = OB_INVALID_ID;
+  uint64_t ref_table_id = OB_INVALID_ID;
+  const ObTableSchema *table_schema = nullptr;
+  const ObDatabaseSchema *database_schema = nullptr;
+  ObSchemaGetterGuard schema_guard;
+  bool nested_started = false;
+  const bool previous_ai_task = ctx_.get_das_ctx().is_ai_column_task_;
+  if (OB_FAIL(MY_SPEC.get_single_table_loc_id(table_loc_id, ref_table_id))) {
+  } else if (OB_ISNULL(GCTX.schema_service_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(GCTX.schema_service_->get_runtime_schema_guard(schema_guard))) {
+  } else if (OB_FAIL(schema_guard.get_table_schema(ref_table_id, table_schema))) {
+  } else if (OB_ISNULL(table_schema) || !ObAIColumnUtil::is_ai_column(*table_schema)) {
+    return ret;
+  } else if (OB_FAIL(schema_guard.get_database_schema(table_schema->get_database_id(), database_schema))) {
+  } else if (OB_ISNULL(database_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(inner_conn_) && OB_FAIL(open_inner_conn())) {
+  } else if (FALSE_IT(ctx_.get_das_ctx().is_ai_column_task_ = true)) {
+  } else if (OB_FAIL(begin_nested_session(false))) {
+  } else {
+    nested_started = true;
+  }
+  ObSqlString qualified_table;
+  if (OB_FAIL(ret)) {
+  } else if (OB_FAIL(ai_append_identifier(qualified_table, database_schema->get_database_name_str()))) {
+  } else if (OB_FAIL(qualified_table.append("."))) {
+  } else if (OB_FAIL(ai_append_identifier(qualified_table, table_schema->get_table_name_str()))) {
+  }
+  for (ObTableSchema::const_column_iterator it = table_schema->column_begin();
+       OB_SUCC(ret) && it != table_schema->column_end(); ++it) {
+    const ObColumnSchemaV2 *column = *it;
+    ObArenaAllocator allocator;
+    ObString state_name;
+    ObString request_name;
+    ObSqlString rowkey_expr;
+    ObSqlString aliased_rowkey_expr;
+    if (OB_ISNULL(column) || !ObAIColumnUtil::is_ai_column(*column)) {
+      continue;
+    } else if (OB_FAIL(ObAIColumnUtil::get_state_column_name(allocator, column->get_column_name_str(), state_name))) {
+    } else if (OB_FAIL(ObAIColumnUtil::get_request_column_name(allocator, column->get_column_name_str(), request_name))) {
+    } else if (OB_FAIL(ai_build_rowkey_expr(*table_schema, ObString(), rowkey_expr))) {
+    } else if (OB_FAIL(ai_build_rowkey_expr(*table_schema, ObString::make_string("ai_row"), aliased_rowkey_expr))) {
+    } else {
+      ObSqlString sql;
+      if (OB_FAIL(sql.append("REPLACE INTO oceanbase.__all_ai_column_task "
+          "(table_id,column_id,rowkey_predicate,request_id,state,retry_count,eligible_ts) SELECT "))) {
+      } else if (OB_FAIL(sql.append_fmt("%lu,%lu,", ref_table_id, column->get_column_id()))) {
+      } else if (OB_FAIL(sql.append(rowkey_expr.string()))) {
+      } else if (OB_FAIL(sql.append(","))) {
+      } else if (OB_FAIL(ai_append_identifier(sql, request_name))) {
+      } else if (OB_FAIL(sql.append_fmt(",1,0,NOW(6) FROM %.*s WHERE ",
+                                        qualified_table.length(), qualified_table.ptr()))) {
+      } else if (OB_FAIL(ai_append_identifier(sql, state_name))) {
+      } else if (OB_FAIL(sql.append("=1"))) {
+      } else if (OB_FAIL(execute_write(sql.ptr()))) {
+      } else if (FALSE_IT(sql.reuse())) {
+      } else if (OB_FAIL(sql.append_fmt("DELETE FROM oceanbase.__all_ai_column_task "
+          "WHERE table_id=%lu AND column_id=%lu AND NOT EXISTS (SELECT 1 FROM %.*s AS `ai_row` WHERE ",
+          ref_table_id, column->get_column_id(), qualified_table.length(), qualified_table.ptr()))) {
+      } else if (OB_FAIL(sql.append(aliased_rowkey_expr.string()))) {
+      } else if (OB_FAIL(sql.append("=oceanbase.__all_ai_column_task.rowkey_predicate)"))) {
+      } else if (OB_FAIL(execute_write(sql.ptr()))) {
+      }
+    }
+  }
+  if (nested_started) {
+    int tmp_ret = end_nested_session();
+    if (OB_SUCCESS == ret) {
+      ret = tmp_ret;
+    }
+  }
+  ctx_.get_das_ctx().is_ai_column_task_ = previous_ai_task;
+  return ret;
+}
+
 int ObTableModifyOp::get_next_row_from_child()
 {
   int ret = OB_SUCCESS;
@@ -1133,6 +1273,9 @@ int ObTableModifyOp::inner_get_next_row()
     }
     //to post process the DML info after writing all data to the storage or returning one row
     ret = write_rows_post_proc(ret);
+    if (OB_SUCC(ret) && iter_end_) {
+      ret = process_ai_column_tasks();
+    }
     if (OB_SUCC(ret) && iter_end_) {
       ret = OB_ITER_END;
     }

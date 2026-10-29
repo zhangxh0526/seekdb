@@ -28,6 +28,7 @@
 #include "sql/engine/expr/ob_expr_regexp_context.h"
 #include "sql/engine/expr/ob_json_param_type.h"
 #include "sql/parser/ob_parser_utils.h"
+#include "sql/engine/basic/ob_file_sql_reader.h"
 
 #include "sql/executor/ob_memory_tracker.h"
 namespace oceanbase
@@ -3107,6 +3108,58 @@ int ObSelectResolver::resolve_into_clause(const ParseNode *node)
       if (T_INTO_OUTFILE == node->type_) { // into outfile
         if (is_in_set_query()) {
           ret = OB_INAPPROPRIATE_INTO;
+        } else if (2 == node->num_child_ && OB_NOT_NULL(node->children_[1]) &&
+                   T_COPY_OPTIONS == node->children_[1]->type_) {
+          bool enabled = false;
+          const ParseNode *options = node->children_[1];
+          if (OB_FAIL(session_info_->get_sys_variable(SYS_VAR_ENABLE_FILE_SQL, enabled))) {
+          } else if (!enabled) {
+            ret = OB_NOT_SUPPORTED;
+            LOG_USER_ERROR(OB_NOT_SUPPORTED, "FileSQL is disabled; set enable_file_sql = ON");
+          } else if (OB_FAIL(resolve_into_const_node(node->children_[0], into_item->outfile_name_))) {
+          } else {
+            into_item->is_file_sql_copy_ = true;
+            into_item->field_str_.set_varchar(",");
+            into_item->line_str_.set_varchar("\n");
+            into_item->closed_cht_.meta_.set_char();
+            into_item->closed_cht_.set_char_value("\"", 1);
+            into_item->escaped_cht_.meta_.set_char();
+            into_item->escaped_cht_.set_char_value("\"", 1);
+            into_item->is_optional_ = false;
+          }
+          for (int32_t i = 0; OB_SUCC(ret) && i < options->num_child_; ++i) {
+            const ParseNode *option = options->children_[i];
+            if (OB_ISNULL(option) || T_FILE_TABLE_OPTION != option->type_ || 2 != option->num_child_ ||
+                OB_ISNULL(option->children_[0]) || OB_ISNULL(option->children_[1])) {
+              ret = OB_ERR_PARSER_SYNTAX;
+            } else {
+              ObString name(option->children_[0]->str_len_, option->children_[0]->str_value_);
+              const ParseNode *value = option->children_[1];
+              if (0 == name.case_compare("format") && OB_NOT_NULL(value->str_value_) &&
+                  0 == ObString(value->str_len_, value->str_value_).case_compare("csv")) {
+              } else if (0 == name.case_compare("header") && T_BOOL == value->type_ && 1 == value->value_) {
+                into_item->copy_header_ = true;
+              } else if (0 == name.case_compare("nullstr") &&
+                         (T_VARCHAR == value->type_ || T_CHAR == value->type_)) {
+                if (OB_FAIL(ob_write_string(*allocator_, ObString(value->str_len_, value->str_value_), into_item->copy_nullstr_))) {
+                }
+              } else {
+                ret = OB_ERR_PARSER_SYNTAX;
+              }
+            }
+          }
+          if (OB_SUCC(ret) && into_item->copy_header_) {
+            std::string header;
+            for (int64_t i = 0; i < select_stmt->get_select_item_size(); ++i) {
+              const SelectItem &item = select_stmt->get_select_item(i);
+              const ObString &name = item.alias_name_.empty() ? item.expr_name_ : item.alias_name_;
+              if (i != 0) header.push_back(',');
+              header.append(file_sql::csv_escape(std::string(name.ptr(), name.length())));
+            }
+            if (OB_FAIL(ob_write_string(*allocator_, ObString(static_cast<int32_t>(header.size()), header.data()),
+                                        into_item->copy_header_row_))) {
+            }
+          }
         } else if (node->num_child_ == 3 && NULL != node->children_[1]
             && T_EXTERNAL_FILE_FORMAT == node->children_[1]->type_) { // Handle with `FORMAT`
           if (OB_FAIL(resolve_into_outfile_with_format(node, *into_item))) {

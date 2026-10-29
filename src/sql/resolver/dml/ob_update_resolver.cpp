@@ -16,6 +16,7 @@
 
 #define USING_LOG_PREFIX SQL_RESV
 #include "sql/resolver/dml/ob_update_resolver.h"
+#include "sql/ai_column/ob_ai_column_util.h"
 
 namespace oceanbase
 {
@@ -106,6 +107,10 @@ int ObUpdateResolver::resolve(const ParseNode &parse_tree)
   }
 
   if (OB_SUCC(ret)) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < tables_assign.count(); ++i) {
+      if (OB_FAIL(resolve_ai_column_assignments(tables_assign.at(i)))) {
+      }
+    }
     // Parse cascading update columns
     if (OB_FAIL(resolve_additional_assignments(tables_assign,
                                                T_UPDATE_SCOPE))) {
@@ -327,6 +332,122 @@ int ObUpdateResolver::resolve_table_list(const ParseNode &parse_tree)
                       table_name.length(), table_name.ptr(),
                       scope_name.length(), scope_name.ptr());
     }
+  }
+  return ret;
+}
+
+int ObUpdateResolver::resolve_ai_column_assignments(ObTableAssignment &table_assign)
+{
+  int ret = OB_SUCCESS;
+  ObUpdateStmt *update_stmt = get_update_stmt();
+  const TableItem *table_item = nullptr;
+  const ObTableSchema *table_schema = nullptr;
+  ObSysFunRawExpr *request_expr = nullptr;
+  if (OB_ISNULL(update_stmt) || OB_ISNULL(params_.expr_factory_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_ISNULL(table_item = update_stmt->get_table_item_by_id(table_assign.table_id_))) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (OB_FAIL(schema_checker_->get_table_schema(table_item->get_base_table_item().ref_id_, table_schema))) {
+  } else if (OB_ISNULL(table_schema)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (!ObAIColumnUtil::is_ai_column(*table_schema)) {
+    return ret;
+  }
+  for (ObTableSchema::const_column_iterator it = table_schema->column_begin();
+       OB_SUCC(ret) && it != table_schema->column_end(); ++it) {
+    const ObColumnSchemaV2 *result_column = *it;
+    ObAIColumnMetadata metadata;
+    bool invalidate = false;
+    if (OB_ISNULL(result_column) || !ObAIColumnUtil::is_ai_column(*result_column)) {
+      continue;
+    } else if (OB_FAIL(ObAIColumnUtil::parse_metadata(*allocator_, *result_column, metadata))) {
+      break;
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && !invalidate && i < table_assign.assignments_.count(); ++i) {
+      const ObColumnRefRawExpr *assigned = table_assign.assignments_.at(i).column_expr_;
+      if (OB_ISNULL(assigned)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        const ObColumnSchemaV2 *assigned_schema = table_schema->get_column_schema(assigned->get_column_id());
+        invalidate = has_exist_in_array(metadata.dependency_column_ids_, assigned->get_column_id())
+                     || (OB_NOT_NULL(assigned_schema) && assigned_schema->is_rowkey_column());
+      }
+    }
+    if (OB_FAIL(ret) || !invalidate) {
+    } else {
+      for (int64_t hidden_index = 0; OB_SUCC(ret) && hidden_index < 3; ++hidden_index) {
+        ObString hidden_name;
+        ObRawExpr *value_expr = nullptr;
+        ObSEArray<ObColumnRefRawExpr *, 1> column_exprs;
+        if (hidden_index == 0) {
+          ObConstRawExpr *state_expr = nullptr;
+          if (OB_FAIL(ObAIColumnUtil::get_state_column_name(*allocator_, result_column->get_column_name_str(), hidden_name))) {
+          } else if (OB_FAIL(ObRawExprUtils::build_const_int_expr(*params_.expr_factory_, ObIntType,
+                         AI_COLUMN_PENDING, state_expr))) {
+          } else {
+            value_expr = state_expr;
+          }
+        } else if (hidden_index == 1) {
+          if (OB_ISNULL(request_expr)) {
+            if (OB_FAIL(params_.expr_factory_->create_raw_expr(T_FUN_SYS_UUID_SHORT, request_expr))) {
+            } else if (OB_ISNULL(request_expr)) {
+              ret = OB_ALLOCATE_MEMORY_FAILED;
+            } else {
+              ObExprResType result_type;
+              result_type.set_uint64();
+              request_expr->set_func_name(ObString::make_string(N_UUID_SHORT));
+              request_expr->set_result_type(result_type);
+              if (OB_FAIL(request_expr->init_param_exprs(0))) {
+              }
+            }
+          }
+          value_expr = request_expr;
+          if (OB_FAIL(ret)) {
+          } else if (OB_FAIL(ObAIColumnUtil::get_request_column_name(*allocator_, result_column->get_column_name_str(), hidden_name))) {
+          }
+        } else {
+          continue;
+        }
+        const ObColumnSchemaV2 *hidden_schema = table_schema->get_column_schema(hidden_name);
+        if (OB_FAIL(ret)) {
+        } else if (OB_ISNULL(hidden_schema)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (OB_FAIL(add_column_to_stmt(*table_item, *hidden_schema, column_exprs))) {
+        } else if (column_exprs.count() != 1) {
+          ret = OB_ERR_UNEXPECTED;
+        } else {
+          ObAssignment assignment;
+          assignment.column_expr_ = column_exprs.at(0);
+          assignment.expr_ = value_expr;
+          assignment.is_implicit_ = true;
+          if (OB_FAIL(table_assign.assignments_.push_back(assignment))) {
+          }
+        }
+      }
+      if (OB_SUCC(ret)) {
+        ObRawExpr *null_expr = nullptr;
+        ObSEArray<ObColumnRefRawExpr *, 1> result_exprs;
+        if (OB_FAIL(ObRawExprUtils::build_null_expr(*params_.expr_factory_, null_expr))) {
+        } else if (OB_FAIL(add_column_to_stmt(*table_item, *result_column, result_exprs))) {
+        } else if (result_exprs.count() != 1) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (OB_FAIL(ObRawExprUtils::build_column_conv_expr(*params_.expr_factory_,
+                                                                  *params_.allocator_,
+                                                                  *result_exprs.at(0),
+                                                                  null_expr,
+                                                                  session_info_))) {
+        } else {
+          ObAssignment assignment;
+          assignment.column_expr_ = result_exprs.at(0);
+          assignment.expr_ = null_expr;
+          assignment.is_implicit_ = true;
+          ret = table_assign.assignments_.push_back(assignment);
+        }
+      }
+    }
+  }
+  if (OB_SUCC(ret) && OB_NOT_NULL(request_expr)) {
+    ret = request_expr->formalize(session_info_);
   }
   return ret;
 }

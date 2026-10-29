@@ -19,6 +19,7 @@
 #include "sql/engine/basic/ob_function_table_op.h"
 #include "sql/engine/ob_exec_context.h"
 #include "sql/engine/expr/ob_expr_lob_utils.h"
+#include "sql/session/ob_sql_session_info.h"
 
 
 namespace oceanbase
@@ -27,15 +28,62 @@ using namespace common;
 namespace sql
 {
 
-OB_SERIALIZE_MEMBER((ObFunctionTableSpec, ObOpSpec), value_expr_, column_exprs_, has_correlated_expr_);
+OB_SERIALIZE_MEMBER((ObFunctionTableSpec, ObOpSpec), value_expr_, column_exprs_, has_correlated_expr_, is_file_table_);
+
+static int file_sql_exec_error(const file_sql::Error &error)
+{
+  int ret = OB_SUCCESS;
+  switch (error.code) {
+    case file_sql::ErrorCode::SUCCESS: return OB_SUCCESS;
+    case file_sql::ErrorCode::INVALID_ARGUMENT:
+      LOG_USER_ERROR(OB_ERR_PARSE_SQL, ob_errpkt_strerror(OB_ERR_PARSER_SYNTAX),
+                     static_cast<int>(error.message_.size()), error.message_.c_str(), 1);
+      return OB_ERR_PARSE_SQL;
+    case file_sql::ErrorCode::NOT_SUPPORTED:
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, error.message_.c_str());
+      return OB_NOT_SUPPORTED;
+    case file_sql::ErrorCode::IO_ERROR:
+      LOG_WARN("FileSQL I/O error", "message", error.message_.c_str());
+      return OB_IO_ERROR;
+    case file_sql::ErrorCode::DATA_ERROR:
+      LOG_USER_ERROR(OB_INVALID_ARGUMENT, error.message_.c_str());
+      return OB_INVALID_ARGUMENT;
+  }
+  return OB_ERR_UNEXPECTED;
+}
 
 int ObFunctionTableOp::inner_open()
 {
   int ret = OB_SUCCESS;
   node_idx_ = 0;
+  file_row_idx_ = 0;
   already_calc_ = false;
+  file_table_.clear();
   if (OB_ISNULL(MY_SPEC.value_expr_)) {
     ret = OB_ERR_UNEXPECTED;
+  } else if (MY_SPEC.is_file_table_) {
+    ObDatum *value = NULL;
+    file_sql::Request request;
+    file_sql::Error error;
+    bool enabled = false;
+    if (OB_ISNULL(ctx_.get_my_session())) {
+      ret = OB_ERR_UNEXPECTED;
+    } else if (OB_FAIL(ctx_.get_my_session()->get_sys_variable(share::SYS_VAR_ENABLE_FILE_SQL, enabled))) {
+    } else if (!enabled) {
+      ret = OB_NOT_SUPPORTED;
+      LOG_USER_ERROR(OB_NOT_SUPPORTED, "FileSQL is disabled; set enable_file_sql = ON");
+    } else if (OB_FAIL(MY_SPEC.value_expr_->eval(eval_ctx_, value)) || OB_ISNULL(value) || value->is_null()) {
+      if (OB_SUCC(ret)) ret = OB_ERR_UNEXPECTED;
+    } else {
+      ObString serialized = value->get_string();
+      if (!request.deserialize(std::string(serialized.ptr(), serialized.length()))) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (file_sql::read_table(request, file_table_, error) != 0) {
+        ret = file_sql_exec_error(error);
+      } else {
+        next_row_func_ = &ObFunctionTableOp::inner_get_next_row_file;
+      }
+    }
   } else if (ObExtendType == MY_SPEC.value_expr_->datum_meta_.type_) {
     next_row_func_ = &ObFunctionTableOp::inner_get_next_row_udf;
   } else {
@@ -48,6 +96,8 @@ int ObFunctionTableOp::inner_rescan()
 {
   int ret = OB_SUCCESS;
   if (OB_FAIL(ObOperator::inner_rescan())) {
+  } else if (MY_SPEC.is_file_table_) {
+    ret = inner_open();
   } else {
     node_idx_ = 0;
     if (MY_SPEC.has_correlated_expr_) {
@@ -66,12 +116,15 @@ int ObFunctionTableOp::inner_close()
   node_idx_ = 0;
   row_count_ = 0;
   col_count_ = 0;
+  file_row_idx_ = 0;
   value_table_ = NULL;
+  file_table_.clear();
   return ret;
 }
 
 void ObFunctionTableOp::destroy()
 {
+  file_table_.clear();
   ObOperator::destroy();
 }
 
@@ -193,6 +246,57 @@ int ObFunctionTableOp::inner_get_next_row_udf()
         }
       }
     }
+  }
+  return ret;
+}
+
+int ObFunctionTableOp::inner_get_next_row_file()
+{
+  int ret = OB_SUCCESS;
+  clear_evaluated_flag();
+  if (OB_FAIL(ctx_.check_status())) {
+  } else if (file_row_idx_ >= static_cast<int64_t>(file_table_.rows_.size())) {
+    ret = OB_ITER_END;
+  } else if (MY_SPEC.column_exprs_.count() != static_cast<int64_t>(file_table_.columns_.size()) ||
+             file_table_.rows_[file_row_idx_].size() != file_table_.columns_.size()) {
+    ret = OB_ERR_UNEXPECTED;
+  } else {
+    const std::vector<file_sql::Cell> &row = file_table_.rows_[file_row_idx_];
+    for (int64_t i = 0; OB_SUCC(ret) && i < MY_SPEC.column_exprs_.count(); ++i) {
+      const file_sql::Cell &cell = row[i];
+      ObExpr *expr = MY_SPEC.column_exprs_.at(i);
+      ObDatum &datum = expr->locate_datum_for_write(eval_ctx_);
+      if (cell.is_null_) {
+        datum.set_null();
+      } else {
+        ObObj obj;
+        switch (file_table_.columns_[i].type_) {
+          case file_sql::ColumnType::BIGINT:
+            obj.set_int(cell.int_value_);
+            break;
+          case file_sql::ColumnType::DOUBLE:
+            obj.set_double(cell.double_value_);
+            break;
+          case file_sql::ColumnType::VARCHAR:
+            obj.set_varchar(ObString(static_cast<int32_t>(cell.string_value_.size()), cell.string_value_.data()));
+            obj.set_collation_type(expr->obj_meta_.get_collation_type());
+            break;
+          case file_sql::ColumnType::BOOLEAN:
+            obj.set_bool(cell.int_value_ != 0);
+            break;
+          case file_sql::ColumnType::DATE:
+            obj.set_date(static_cast<int32_t>(cell.int_value_));
+            break;
+          case file_sql::ColumnType::DATETIME:
+            obj.set_datetime(cell.int_value_);
+            break;
+        }
+        if (OB_FAIL(datum.from_obj(obj, expr->obj_datum_map_))) {
+        }
+      }
+      if (OB_SUCC(ret)) expr->set_evaluated_projected(eval_ctx_);
+    }
+    if (OB_SUCC(ret)) ++file_row_idx_;
   }
   return ret;
 }

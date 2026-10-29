@@ -5486,6 +5486,16 @@ int ObStaticEngineCG::generate_spec(ObLogSelectInto &op, ObSelectIntoSpec &spec,
       spec.cs_type_ = op.get_cs_type();
       spec.parallel_ = op.get_parallel();
       spec.is_overwrite_ = op.get_is_overwrite();
+      const ObSelectIntoItem *into_item = static_cast<const ObSelectStmt *>(op.get_stmt())->get_select_into();
+      if (OB_ISNULL(into_item)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else {
+        spec.is_file_sql_copy_ = into_item->is_file_sql_copy_;
+        spec.copy_header_ = into_item->copy_header_;
+        if (OB_FAIL(ob_write_string(alloc, into_item->copy_nullstr_, spec.copy_nullstr_))) {
+        } else if (OB_FAIL(ob_write_string(alloc, into_item->copy_header_row_, spec.copy_header_row_))) {
+        }
+      }
       spec.plan_->need_drive_dml_query_ = true;
     }
   }
@@ -5510,6 +5520,7 @@ int ObStaticEngineCG::generate_spec(ObLogFunctionTable &op, ObFunctionTableSpec 
   } else if (OB_FAIL(generate_rt_expr(*value_raw_expr, value_expr))) {
   } else {
     spec.has_correlated_expr_ = value_raw_expr->has_flag(CNT_DYNAMIC_PARAM);
+    spec.is_file_table_ = op.is_file_table();
     spec.value_expr_ = value_expr;
     for (int64_t i = 0; OB_SUCC(ret) && i < op.get_output_exprs().count(); ++i) {
       if (OB_FAIL(mark_expr_self_produced(op.get_output_exprs().at(i)))) {

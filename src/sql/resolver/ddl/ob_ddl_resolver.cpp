@@ -32,6 +32,7 @@
 #include "share/rc/ob_server_runtime.h"
 #include "share/schema/ob_table_schema.h"
 #include "sql/engine/expr/ob_obj_cast_runtime.h"
+#include "sql/ai_column/ob_ai_column_util.h"
 
 namespace oceanbase
 {
@@ -1879,6 +1880,19 @@ int ObDDLResolver::resolve_column_definition(ObColumnSchemaV2 &column,
     ParseNode *expr_node = NULL;
     if (OB_ISNULL(expr_node = node->children_[3])) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (OB_NOT_NULL(node->children_[4])
+               && node->children_[4]->type_ == T_AI_COLUMN_OPTIONS) {
+      ObSEArray<ObColumnSchemaV2, 16> resolved_columns;
+      for (ObTableSchema::const_column_iterator it = table_schema.column_begin();
+           OB_SUCC(ret) && it != table_schema.column_end(); ++it) {
+        if (OB_ISNULL(*it)) {
+          ret = OB_ERR_UNEXPECTED;
+        } else if (OB_FAIL(resolved_columns.push_back(**it))) {
+        }
+      }
+      if (OB_SUCC(ret)) {
+        ret = ObAIColumnUtil::resolve_ai_column_definition(column, *node, resolved_columns, *allocator_);
+      }
     } else {
       ObString expr_str(expr_node->str_len_, expr_node->str_value_);
       ObObj default_value;
