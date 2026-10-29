@@ -1,6 +1,7 @@
 """Native public/private header ownership for the SQL module."""
 
 SQL_PUBLIC_HEADER_ROOTS = [
+    "ai_column/ob_ai_column_util.h",
     "code_generator/ob_expr_generator_impl.h",
     "code_generator/ob_static_engine_expr_cg.h",
     "das/iter/ob_das_iter.h",
@@ -25,6 +26,7 @@ SQL_PUBLIC_HEADER_ROOTS = [
     "engine/cmd/ob_vector_refresh_index_executor.h",
     "engine/dml/ob_trigger_handler.h",
     "engine/expr/ob_array_expr_utils.h",
+    "engine/expr/ob_expr_ai/ob_ai_func_client.h",
     "engine/expr/ob_expr_ai/ob_ai_func_utils.h",
     "engine/expr/ob_expr_column_conv.h",
     "engine/expr/ob_expr_lob_utils.h",
@@ -538,7 +540,6 @@ SQL_PRIVATE_HEADERS = [
     "engine/expr/ob_expr_acos.h",
     "engine/expr/ob_expr_add.h",
     "engine/expr/ob_expr_agg_param_list.h",
-    "engine/expr/ob_expr_ai/ob_ai_func_client.h",
     "engine/expr/ob_expr_ai/ob_expr_ai_complete.h",
     "engine/expr/ob_expr_ai/ob_expr_ai_embed.h",
     "engine/expr/ob_expr_ai/ob_expr_ai_prompt.h",

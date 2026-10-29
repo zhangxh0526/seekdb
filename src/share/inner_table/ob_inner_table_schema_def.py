@@ -2448,6 +2448,28 @@ all_ai_model_endpoint_def = dict(
 def_table_schema(**all_ai_model_endpoint_def)
 
 
+def_table_schema(
+    owner = 'seekdb.ai',
+    table_name = '__all_ai_column_task',
+    table_id = '1131',
+    table_type = 'SYSTEM_TABLE',
+    gm_columns = ['gmt_create', 'gmt_modified'],
+    rowkey_columns = [
+      ('table_id', 'int'),
+      ('column_id', 'int'),
+      ('rowkey_predicate', 'varchar:512')
+    ],
+    is_cluster_private = False,
+    meta_record_in_sys = False,
+    normal_columns = [
+      ('request_id', 'varchar:128', 'false'),
+      ('state', 'int', 'false', 1),
+      ('retry_count', 'int', 'false', 0),
+      ('eligible_ts', 'timestamp:6', 'false')
+    ]
+)
+
+
 all_objauth_mysql_def = dict(
     owner = 'cjl476581',
     table_name     = '__all_objauth_mysql',
@@ -13823,6 +13845,45 @@ def_table_schema(
       RESPONSE_TRANSFORM_FN,
       MAX_CONCURRENCY
     FROM oceanbase.__all_ai_model_endpoint WHERE ENDPOINT_ID != -1;
+  """.replace("\n", " ")
+)
+
+def_table_schema(
+  owner           = 'seekdb.ai',
+  table_name      = '__all_ai_column',
+  table_id        = '21665',
+  table_type      = 'SYSTEM_VIEW',
+  rowkey_columns  = [],
+  normal_columns  = [],
+  gm_columns      = [],
+  view_definition =
+  """
+    SELECT
+      c.table_id,
+      c.column_id,
+      c.column_name,
+      state_col.column_id AS state_column_id,
+      request_col.column_id AS request_column_id,
+      spec_col.column_id AS result_spec_column_id,
+      JSON_UNQUOTE(JSON_EXTRACT(c.comment, '$.normalized_expr')) AS normalized_expr,
+      JSON_UNQUOTE(JSON_EXTRACT(c.comment, '$.sync_mode')) AS sync_mode,
+      CAST(JSON_EXTRACT(c.comment, '$.max_retries') AS SIGNED) AS max_retries,
+      JSON_UNQUOTE(JSON_EXTRACT(c.comment, '$.function')) AS function_type,
+      JSON_UNQUOTE(JSON_EXTRACT(c.comment, '$.model')) AS model_name,
+      JSON_UNQUOTE(JSON_EXTRACT(c.comment, '$.prompt_expr')) AS prompt_expr,
+      JSON_UNQUOTE(JSON_EXTRACT(c.comment, '$.system_prompt')) AS system_prompt,
+      c.data_type
+    FROM oceanbase.__all_column c
+    JOIN oceanbase.__all_column state_col
+      ON state_col.table_id = c.table_id
+     AND state_col.column_name = CONCAT('__', c.column_name, '_ai_state')
+    JOIN oceanbase.__all_column request_col
+      ON request_col.table_id = c.table_id
+     AND request_col.column_name = CONCAT('__', c.column_name, '_ai_request')
+    JOIN oceanbase.__all_column spec_col
+      ON spec_col.table_id = c.table_id
+     AND spec_col.column_name = CONCAT('__', c.column_name, '_ai_result_spec')
+    WHERE (c.column_flags & 2147483648) != 0
   """.replace("\n", " ")
 )
 

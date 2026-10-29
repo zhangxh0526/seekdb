@@ -30,6 +30,7 @@
 #include "query/change_stream/ob_change_stream_service.h"
 #include "query/command/ob_local_command_service.h"
 #include "rootserver/ob_rootserver_local_runtime.h"
+#include "observer/ai_column/ob_ai_column_worker.h"
 
 namespace oceanbase
 {
@@ -177,6 +178,7 @@ private:
   query::ObIChangeStreamService &change_stream_service_;
   ObSchemaReleaseTimeTask schema_release_task_;
   TelemetryTask telemetry_task_;
+  ObAIColumnWorker ai_column_worker_;
 };
 
 }//end namespace observer

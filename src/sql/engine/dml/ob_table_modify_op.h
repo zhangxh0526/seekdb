@@ -253,6 +253,7 @@ public:
   int submit_all_dml_task();
 
   int perform_batch_fk_check();
+  int process_ai_column_tasks();
 protected:
   OperatorOpenOrder get_operator_open_order() const;
   virtual int inner_open();
