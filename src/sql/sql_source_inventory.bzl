@@ -20,6 +20,7 @@ SQL_UNITY_GROUPS = [
         name = "ob_sql_common_0",
         language = "c++",
         srcs = [
+            "src/sql/ai_column/ob_ai_column_util.cpp",
             "src/sql/ob_end_trans_callback.cpp",
             "src/sql/ob_end_trans_cb_packet_param.cpp",
             "src/sql/ob_phy_table_location.cpp",

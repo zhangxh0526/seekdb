@@ -395,6 +395,7 @@ END_P SET_VAR DELIMITER
 %type <node> update_basic_stmt delete_basic_stmt
 %type <node> table_element_list table_element column_definition column_definition_ref column_definition_list column_name_list
 %type <node> opt_generated_keyname opt_generated_option_list opt_generated_column_attribute_list generated_column_attribute opt_storage_type
+%type <node> opt_ai_column_options ai_column_option_list ai_column_option
 %type <node> data_type special_table_type opt_if_not_exists opt_if_exists opt_charset collation opt_collation cast_data_type
 %type <node> replace_with_opt_hint insert_with_opt_hint column_list opt_on_duplicate_key_clause opt_into opt_replace opt_temporary no_param_column_ref
 %type <node> insert_vals_list insert_vals value_or_values opt_insert_row_alias
@@ -4849,6 +4850,12 @@ column_definition_ref data_type opt_column_attribute_list opt_column_reference o
   merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, $10);
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 7, $1, $2, attributes, $7, $9, $12, $4);
 }
+| column_definition_ref data_type AI COLUMN '(' expr ')' opt_ai_column_options
+{
+  ParseNode *attributes = NULL;
+  dup_expr_string($6, result, @6.first_column, @6.last_column);
+  malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 7, $1, $2, attributes, $6, $8, NULL, NULL);
+}
 | column_definition_ref SERIAL opt_column_attribute_list opt_position_column 
 {
   ParseNode *unsigned_bigint_type = NULL;
@@ -4874,6 +4881,39 @@ column_definition_ref data_type opt_column_attribute_list opt_column_reference o
   malloc_non_terminal_node(attributes, result->malloc_pool_, T_LINK_NODE, 2, attributes, unique_attr);
   merge_nodes(attributes, result, T_COLUMN_ATTRIBUTES, attributes);
   malloc_non_terminal_node($$, result->malloc_pool_, T_COLUMN_DEFINITION, 4, $1, unsigned_bigint_type, attributes, $4);
+}
+;
+
+opt_ai_column_options:
+WITH '(' ai_column_option_list ')'
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTIONS, 1, $3);
+}
+| /*empty*/
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTIONS, 1, NULL);
+}
+;
+
+ai_column_option_list:
+ai_column_option_list ',' ai_column_option
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_LINK_NODE, 2, $1, $3);
+}
+| ai_column_option
+{
+  $$ = $1;
+}
+;
+
+ai_column_option:
+relation_name COMP_EQ STRING_VALUE
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, $1, $3);
+}
+| relation_name COMP_EQ INTNUM
+{
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_OPTION, 2, $1, $3);
 }
 ;
 
@@ -14704,6 +14744,14 @@ opt_set table_option_list_space_seperated
 | alter_column_option
 {
   malloc_non_terminal_node($$, result->malloc_pool_, T_ALTER_COLUMN_OPTION, 1, $1);
+}
+| relation_name AI COLUMN column_definition_ref opt_where
+{
+  if ($1->str_len_ != 5 || 0 != strncasecmp($1->str_value_, "retry", 5)) {
+    yyerror(&@1, result, "expected RETRY AI COLUMN");
+    YYERROR;
+  }
+  malloc_non_terminal_node($$, result->malloc_pool_, T_AI_COLUMN_RETRY, 2, $4, $5);
 }
 | RENAME opt_to relation_factor
 {
