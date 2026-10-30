@@ -45,14 +45,19 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
     /* The frozen library uses OpenBLAS for host work. Its default 64-worker
        team oversubscribes the CPU quota. Serialize temporary process-wide
        tuning and restore the caller's setting on both success and failure. */
-    int (*get_threads)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "openblas_get_num_threads");
-    void (*set_threads)(int) = (void (*)(int))dlsym(RTLD_DEFAULT, "openblas_set_num_threads");
-    if (pthread_mutex_lock(&sk_cuvs_build_mutex) != 0) goto fail_idx;
+    void* blas = dlopen("libopenblas.so.0", RTLD_NOW | RTLD_NOLOAD);
+    int (*get_threads)(void) = blas ? (int (*)(void))dlsym(blas, "openblas_get_num_threads") : NULL;
+    void (*set_threads)(int) = blas ? (void (*)(int))dlsym(blas, "openblas_set_num_threads") : NULL;
+    if (pthread_mutex_lock(&sk_cuvs_build_mutex) != 0) {
+      if (blas) dlclose(blas);
+      goto fail_idx;
+    }
     int threads = get_threads ? get_threads() : 0;
     if (threads > 8 && set_threads) set_threads(8);
     int status = cuvsCagraBuild(h->res, h->ip, &dset, h->idx);
     if (threads > 8 && set_threads) set_threads(threads);
     pthread_mutex_unlock(&sk_cuvs_build_mutex);
+    if (blas) dlclose(blas);
     if (status != CUVS_SUCCESS) goto fail_idx;
   }
   h->n = n; h->dim = dim;
