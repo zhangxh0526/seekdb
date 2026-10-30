@@ -58,7 +58,9 @@ int ObDDLExecutorUtil::wait_ddl_finish(const int64_t task_id,
     const bool is_support_cancel)
 {
   int ret = OB_SUCCESS;
-  const int64_t retry_interval = 100 * 1000;
+  // each poll is a point lookup on the ddl error message table, so poll often enough that a
+  // finished task is noticed promptly
+  const int64_t retry_interval = 20 * 1000;
   ObAddr unused_addr;
   bool is_table_exist = false;
   int64_t unused_user_msg_len = 0;

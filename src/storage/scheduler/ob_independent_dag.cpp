@@ -465,6 +465,10 @@ int ObIndependentDag::deal_with_finish_task(
       ObIDag::ObDagStatus status = is_dag_failed() ? ObIDag::DAG_STATUS_ABORT : ObIDag::DAG_STATUS_FINISH;
       set_dag_status(status);
       COMMON_LOG(INFO, "dag finished", K(ret), K_(dag_ret), K(status), "runtime", ObTimeUtility::fast_current_time() - start_time_, KPC(this));
+      // wake the threads parked in wait_signal() so they see the final status without waiting for the timeout
+      ObThreadCondGuard guard(cond_);
+      if (OB_TMP_FAIL(cond_.broadcast())) {
+      }
     }
   }
   COMMON_LOG(INFO, "finish deal with finish task", K(ret), K(error_code), K(task_is_suspended));

@@ -350,7 +350,9 @@ int ObDDLLocalBuilder::push_task(ObAsyncTask &task)
 
 int64_t ObDDLLocalBuilder::get_thread_cnt_() const
 {
-  return lib::is_mini_mode() ? 1 : 16;
+  // Mini mode keeps a few builders so that sibling builds of one DDL (e.g. the inverted and
+  // forward aux tables of a fulltext index) run concurrently instead of queueing.
+  return lib::is_mini_mode() ? 4 : 16;
 }
 
 }  // end namespace share
