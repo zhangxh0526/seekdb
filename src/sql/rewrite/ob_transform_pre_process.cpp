@@ -178,9 +178,19 @@ int ObTransformPreProcess::transform_one_stmt(common::ObIArray<ObParentDMLStmt> 
       }
     }
     if (OB_SUCC(ret)) {
-      if (stmt->get_match_exprs().count() > 0 &&
-          OB_FAIL(preserve_order_for_fulltext_search(stmt, is_happened))) {
-      } else {
+      bool order_observable = true;
+      const TableItem *view_item = nullptr;
+      is_happened = false;
+      if (0 == stmt->get_match_exprs().count()) {
+      } else if (OB_FAIL(check_fulltext_order_observable(parent_stmts, stmt, order_observable, view_item))) {
+      } else if (order_observable) {
+        if (OB_FAIL(preserve_order_for_fulltext_search(stmt, is_happened))) {
+        }
+      } else if (OB_ISNULL(view_item)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(prune_unobservable_fulltext_view(parent_stmts, *view_item, stmt, is_happened))) {
+      }
+      if (OB_SUCC(ret)) {
         trans_happened |= is_happened;
       }
     }
@@ -3784,6 +3794,99 @@ int ObTransformPreProcess::do_flatten_conditions(ObDMLStmt *stmt, ObIArray<ObRaw
   } else if (trans_happened) {
     trans_happened =  flatten_happend ;
     OPT_TRACE("   flatten_happend:", flatten_happend);
+  }
+  return ret;
+}
+
+// The implicit relevance order only decides which rows a LIMIT keeps. When the stmt is a view whose
+// columns are never referenced by the parent (e.g. SELECT COUNT(*) FROM (... LIMIT n) v), the rows are
+// indistinguishable to the parent, so the order cannot be observed and need not be preserved.
+int ObTransformPreProcess::check_fulltext_order_observable(const ObIArray<ObParentDMLStmt> &parent_stmts,
+                                                           const ObDMLStmt *stmt,
+                                                           bool &is_observable,
+                                                           const TableItem *&view_item)
+{
+  int ret = OB_SUCCESS;
+  is_observable = true;
+  view_item = nullptr;
+  const ObDMLStmt *parent = nullptr;
+  if (OB_ISNULL(stmt)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (!stmt->is_select_stmt() || parent_stmts.empty()) {
+    // do nothing
+  } else if (OB_ISNULL(parent = parent_stmts.at(parent_stmts.count() - 1).stmt_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (!parent->is_select_stmt()) {
+    // do nothing
+  } else if (static_cast<const ObSelectStmt *>(stmt)->is_set_stmt()
+             || static_cast<const ObSelectStmt *>(stmt)->has_distinct()
+             || static_cast<const ObSelectStmt *>(stmt)->has_group_by()
+             || static_cast<const ObSelectStmt *>(stmt)->get_aggr_item_size() != 0
+             || static_cast<const ObSelectStmt *>(stmt)->has_window_function()) {
+    // row count of the view depends on its output, keep the default behavior
+  } else {
+    const ObSelectStmt *sel_stmt = static_cast<const ObSelectStmt *>(stmt);
+    bool simple_output = true;
+    for (int64_t i = 0; OB_SUCC(ret) && simple_output && i < sel_stmt->get_select_item_size(); ++i) {
+      const ObRawExpr *expr = sel_stmt->get_select_item(i).expr_;
+      if (OB_ISNULL(expr)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (!expr->is_column_ref_expr() && !expr->is_const_raw_expr()) {
+        simple_output = false;
+      }
+    }
+    for (int64_t i = 0; OB_SUCC(ret) && simple_output && i < parent->get_table_size(); ++i) {
+      const TableItem *table_item = parent->get_table_item(i);
+      if (OB_ISNULL(table_item)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (table_item->is_generated_table() && table_item->ref_query_ == stmt) {
+        ObSEArray<ColumnItem, 4> column_items;
+        if (OB_FAIL(parent->get_column_items(table_item->table_id_, column_items))) {
+          LOG_WARN("failed to get column items", K(ret));
+        } else if (column_items.empty()) {
+          is_observable = false;
+          view_item = table_item;
+        }
+        break;
+      }
+    }
+  }
+  return ret;
+}
+
+// Rewrite the select list of an unobservable fulltext view to a dummy const, so that the text
+// retrieval scan neither projects nor looks up columns nobody reads. Fulltext stmts skip the
+// regular projection pruning rule, hence it is done here.
+int ObTransformPreProcess::prune_unobservable_fulltext_view(const ObIArray<ObParentDMLStmt> &parent_stmts,
+                                                            const TableItem &view_item,
+                                                            ObDMLStmt *stmt,
+                                                            bool &trans_happened)
+{
+  int ret = OB_SUCCESS;
+  trans_happened = false;
+  ObDMLStmt *parent = nullptr;
+  ObSelectStmt *sel_stmt = nullptr;
+  ObSqlBitSet<> removed_idx;
+  if (OB_ISNULL(stmt) || OB_UNLIKELY(!stmt->is_select_stmt() || parent_stmts.empty())
+      || OB_ISNULL(parent = parent_stmts.at(parent_stmts.count() - 1).stmt_)) {
+    ret = OB_ERR_UNEXPECTED;
+  } else if (FALSE_IT(sel_stmt = static_cast<ObSelectStmt *>(stmt))) {
+  } else if (1 == sel_stmt->get_select_item_size()
+             && OB_NOT_NULL(sel_stmt->get_select_item(0).expr_)
+             && sel_stmt->get_select_item(0).expr_->is_const_raw_expr()) {
+    // already a dummy output
+  } else {
+    for (int64_t i = 0; OB_SUCC(ret) && i < sel_stmt->get_select_item_size(); ++i) {
+      if (OB_FAIL(removed_idx.add_member(i))) {
+      }
+    }
+    if (OB_FAIL(ret) || removed_idx.is_empty()) {
+    } else if (OB_FAIL(ObTransformUtils::remove_select_items(ctx_, view_item.table_id_, *sel_stmt,
+                                                             *parent, removed_idx))) {
+      LOG_WARN("failed to remove select items", K(ret));
+    } else {
+      trans_happened = true;
+    }
   }
   return ret;
 }

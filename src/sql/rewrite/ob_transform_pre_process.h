@@ -376,6 +376,14 @@ private:
   int check_is_correlated_cte(ObSelectStmt *stmt, ObIArray<ObSelectStmt *> &visited_cte, bool &is_correlated);
   int convert_join_preds_vector_to_scalar(JoinedTable &joined_table, bool &trans_happened);
   int preserve_order_for_fulltext_search(ObDMLStmt *stmt, bool& trans_happened);
+  int check_fulltext_order_observable(const common::ObIArray<ObParentDMLStmt> &parent_stmts,
+                                      const ObDMLStmt *stmt,
+                                      bool &is_observable,
+                                      const TableItem *&view_item);
+  int prune_unobservable_fulltext_view(const common::ObIArray<ObParentDMLStmt> &parent_stmts,
+                                       const TableItem &view_item,
+                                       ObDMLStmt *stmt,
+                                       bool &trans_happened);
 
   int flatten_conditions(ObDMLStmt *stmt, bool &trans_happened);
   int recursive_flatten_join_conditions(ObDMLStmt *stmt, TableItem *table, bool &trans_happened);
