@@ -679,6 +679,8 @@ ObTableScanOp::ObTableScanOp(ObExecContext &exec_ctx, const ObOpSpec &spec, ObOp
     in_rescan_(false),
     domain_index_(),
     fts_index_(),
+    fts_col_exprs_(),
+    fts_batch_rows_(false),
     output_   (nullptr),
     fold_iter_(nullptr),
     iter_tree_(nullptr),
@@ -1439,6 +1441,7 @@ int ObTableScanOp::inner_open()
   } else if (OB_FAIL(init_table_scan_rtdef())) {
   } else if (MY_SPEC.is_fts_ddl_ && OB_FAIL(fts_index_.init(MY_SPEC.is_fts_index_aux_, MY_SPEC.parser_name_,
           MY_SPEC.parser_properties_))) {
+  } else if (MY_SPEC.is_fts_ddl_ && OB_FAIL(init_fts_col_exprs())) {
   } else {
     if (MY_SPEC.report_col_checksum_) {
       if (PHY_TABLE_SCAN == MY_SPEC.get_type()) {
@@ -2199,7 +2202,10 @@ ERRSIM_POINT_DEF(EN_TABLE_SCAN_RETRY_WAIT_EVENT_ERRSIM);
 int ObTableScanOp::inner_get_next_batch(const int64_t max_row_cnt)
 {
   int ret = OB_SUCCESS;
-  if (OB_UNLIKELY(rand_scan_processor_.use_rand_scan())) {
+  if (OB_UNLIKELY(MY_SPEC.is_fts_ddl_)) {
+    if (OB_FAIL(inner_get_next_fts_index_batch(max_row_cnt))) {
+    }
+  } else if (OB_UNLIKELY(rand_scan_processor_.use_rand_scan())) {
     if (OB_FAIL(rand_scan_processor_.inner_get_next_batch(max_row_cnt))) {
     }
   } else if (OB_FAIL(inner_get_next_batch_for_tsc(max_row_cnt))) {
@@ -3643,6 +3649,75 @@ int ObTableScanOp::inner_get_next_fts_index_row()
   return ret;
 }
 
+// The data table is read row by row into the first row of the batch (the storage scan of a fts ddl is
+// not vectorized, see ObStaticEngineCG::generate_spec_final), and then segmented into the fts rows of
+// the batch. The row cache reuses its memory to segment the next document, so a batch only takes rows
+// of one document: they stay valid until the parent asks for the next batch.
+int ObTableScanOp::inner_get_next_fts_index_batch(const int64_t max_row_cnt)
+{
+  int ret = OB_SUCCESS;
+  const int64_t batch_size = fts_batch_rows_ ? min(max_row_cnt, MY_SPEC.max_batch_size_) : 1;
+  blocksstable::ObDatumRow *row = nullptr;
+  ObEvalCtx::BatchInfoScopeGuard batch_info_guard(eval_ctx_);
+  batch_info_guard.set_batch_size(1);
+  batch_info_guard.set_batch_idx(0);
+  clear_evaluated_flag();
+  brs_.size_ = 0;
+  brs_.end_ = false;
+  if (OB_UNLIKELY(nullptr != tsc_rtdef_.scan_rtdef_.sample_info_)) {
+    // sampling outputs data table rows, like inner_get_next_row()
+    if (OB_SUCC(inner_get_next_row_implement())) {
+      brs_.size_ = 1;
+    }
+  } else if (OB_FAIL(fts_index_.get_next_row(row))) {
+    if (OB_ITER_END != ret) {
+    } else if (OB_FAIL(fetch_next_fts_index_rows())) { // need overwrite return code
+    } else if (OB_FAIL(fts_index_.get_next_row(row))) {
+    }
+  }
+  if (OB_SUCC(ret) && nullptr != row) {
+    batch_info_guard.set_batch_size(batch_size);
+    while (OB_SUCC(ret) && nullptr != row) {
+      batch_info_guard.set_batch_idx(brs_.size_);
+      if (OB_FAIL(fill_generated_fts_cols(row))) {
+      } else if (++brs_.size_ >= batch_size) {
+        row = nullptr;
+      } else if (OB_FAIL(fts_index_.get_next_row(row))) {
+        if (OB_ITER_END == ret) {
+          ret = OB_SUCCESS;
+          row = nullptr;
+        }
+      }
+    }
+  }
+  if (OB_ITER_END == ret) {
+    ret = OB_SUCCESS;
+    brs_.end_ = true;
+  }
+  return ret;
+}
+
+int ObTableScanOp::init_fts_col_exprs()
+{
+  int ret = OB_SUCCESS;
+  const ObExprOperatorType *expr_types = MY_SPEC.is_fts_index_aux_ ? ObFTIndexRowCache::FTS_INDEX_EXPR_TYPE : ObFTIndexRowCache::FTS_DOC_WORD_EXPR_TYPE;
+  for (int64_t i = 0; OB_SUCC(ret) && i < share::ObFtsIndexBuilderUtil::OB_FTS_INDEX_OR_DOC_WORD_TABLE_COL_CNT; ++i) {
+    if (OB_FAIL(get_output_fts_col_expr_by_type(expr_types[i], fts_col_exprs_[i]))) {
+    }
+  }
+  // Any other output would be evaluated for every row of a batch, from data table rows that are not
+  // there: such a scan keeps returning one fts row per batch.
+  fts_batch_rows_ = OB_SUCC(ret) && MY_SPEC.max_batch_size_ > 1;
+  for (int64_t i = 0; OB_SUCC(ret) && fts_batch_rows_ && i < MY_SPEC.output_.count(); ++i) {
+    bool is_fts_col = false;
+    for (int64_t j = 0; !is_fts_col && j < share::ObFtsIndexBuilderUtil::OB_FTS_INDEX_OR_DOC_WORD_TABLE_COL_CNT; ++j) {
+      is_fts_col = MY_SPEC.output_.at(i) == fts_col_exprs_[j];
+    }
+    fts_batch_rows_ = is_fts_col;
+  }
+  return ret;
+}
+
 int ObTableScanOp::fetch_next_fts_index_rows()
 {
   int ret = OB_SUCCESS;
@@ -3689,13 +3764,13 @@ int ObTableScanOp::fill_generated_fts_cols(blocksstable::ObDatumRow *row)
 {
   int ret = OB_SUCCESS;
   const ObObjDatumMapType *types = MY_SPEC.is_fts_index_aux_ ? ObFTIndexRowCache::FTS_INDEX_TYPES : ObFTIndexRowCache::FTS_DOC_WORD_TYPES;
-  const ObExprOperatorType *expr_types = MY_SPEC.is_fts_index_aux_ ? ObFTIndexRowCache::FTS_INDEX_EXPR_TYPE : ObFTIndexRowCache::FTS_DOC_WORD_EXPR_TYPE;
   if (OB_ISNULL(row)) {
     ret = OB_INVALID_ARGUMENT;
   } else {
     for (int64_t i = 0; OB_SUCC(ret) && i < share::ObFtsIndexBuilderUtil::OB_FTS_INDEX_OR_DOC_WORD_TABLE_COL_CNT; ++i) {
-      ObExpr *expr = nullptr;
-      if (OB_FAIL(get_output_fts_col_expr_by_type(expr_types[i], expr))) {
+      ObExpr *expr = fts_col_exprs_[i];
+      if (OB_ISNULL(expr)) {
+        ret = OB_ERR_UNEXPECTED;
       } else {
         ObDatum &datum = expr->locate_datum_for_write(eval_ctx_);
         ObEvalInfo &eval_info = expr->get_eval_info(eval_ctx_);
