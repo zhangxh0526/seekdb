@@ -51,7 +51,17 @@ private:
   ObObjMeta meta_;
 };
 
-typedef common::hash::ObHashMap<ObFTWord, int64_t> ObFTWordMap;
+// Word maps are always private to one segmentation call, so neither the buckets nor the node
+// allocator need locking.
+typedef common::hash::HashMapTypes<ObFTWord, int64_t>::AllocType ObFTWordMapNode;
+typedef common::hash::ObHashMap<ObFTWord,
+                                int64_t,
+                                common::hash::NoPthreadDefendMode,
+                                common::hash::hash_func<ObFTWord>,
+                                common::hash::equal_to<ObFTWord>,
+                                common::hash::SimpleAllocer<ObFTWordMapNode,
+                                    common::hash::NodeNumTraits<ObFTWordMapNode>::NODE_NUM,
+                                    common::hash::NoPthreadDefendMode>> ObFTWordMap;
 
 class ObAddWordFlag final
 {
