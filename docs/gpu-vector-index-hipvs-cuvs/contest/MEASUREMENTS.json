@@ -1,0 +1,783 @@
+{
+  "official": false,
+  "official_score": null,
+  "runtime_commit": "cd22ba97017f289c45f9f243c92c9110df9f0f57",
+  "baseline_commit": "634888d9b037153fa143d2c913ba4b25503e1d62",
+  "evidence_archive_sha256": "edc3cabdec399b2332dd4e4ef8604a25616eecf65c27bd7c4039302f2cf7fa7e",
+  "datasets": {
+    "sift250k": {
+      "baseline_median_seconds": 47.099841131363064,
+      "candidate_median_seconds": 16.337265718262643,
+      "build_ratio_geomean": 2.8537551490557598,
+      "query_ratio_geomean": 1.008083025790165,
+      "worst_recall_delta": -9.76562500000222e-05,
+      "max_sampled_vram_ratio": 1.0000055884029462
+    },
+    "proxy256": {
+      "baseline_median_seconds": 49.747822518926114,
+      "candidate_median_seconds": 20.34472084371373,
+      "build_ratio_geomean": 2.4324752729737202,
+      "query_ratio_geomean": 1.0071565378600618,
+      "worst_recall_delta": -0.0009765625,
+      "max_sampled_vram_ratio": 1.0005945699119085
+    }
+  },
+  "pairs": [
+    {
+      "dataset": "sift250k",
+      "round": 1,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "build_ratio": 2.8919431228990047,
+      "query_ratio": 1.0067562976694227,
+      "vram_ratio": 0.9999832350722289,
+      "quality": {
+        "recall_delta_top10": 4.882812500006661e-05,
+        "recall_delta_top100": 2.6855468750031086e-05
+      },
+      "development_gates_pass": true,
+      "baseline": {
+        "build_seconds": 47.24644324090332,
+        "ddl_seconds": 47.20381815498695,
+        "first_query_seconds": 0.04262508591637015,
+        "top10": {
+          "seconds": 28.903462728951126,
+          "qps": 141.7131240782872,
+          "recall": 0.99990234375,
+          "p95_seconds": 0.007371993386186659,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 30.24325775494799,
+          "qps": 135.43514502269082,
+          "recall": 0.99995361328125,
+          "p95_seconds": 0.007825730717740953,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 732958720,
+        "binary_sha256": "b3b893e9677a3a7879a61aa51b16cf9d71a855fed2e7f93b7d19d8b60f9d94d9",
+        "bridge_sha256": "030b36246e3fc4e92743e432d00979f7a729fdf36fb8b6ff482b75fb008e9da6",
+        "data": {
+          "source": "Public SIFT development subset transported as NPZ",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 128,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "fc9bf0ddbd9e5e810dd35cf1edeec6edbad10c50206321a04d7f77fb9219c28c",
+          "query_sha256": "fb5b67515be0378ca691e11ab68c18100e19b9902e6f78b1f6b6e543d074ae04"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      },
+      "candidate": {
+        "build_seconds": 16.337265718262643,
+        "ddl_seconds": 16.301860163919628,
+        "first_query_seconds": 0.035405554343014956,
+        "top10": {
+          "seconds": 28.659157134592533,
+          "qps": 142.92116061766504,
+          "recall": 0.999951171875,
+          "p95_seconds": 0.007497633574530482,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 30.093058058060706,
+          "qps": 136.11112543289192,
+          "recall": 0.99998046875,
+          "p95_seconds": 0.007865276653319597,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 732946432,
+        "binary_sha256": "f49dd1d632b2c672f07396707a8561c476d06e03314e9dd99415eeed8a5187d3",
+        "bridge_sha256": "6e88bba49d44b44e9569e5b5bf225d5a91f0fa837568bba668c8f4caa882fc1a",
+        "data": {
+          "source": "Public SIFT development subset transported as NPZ",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 128,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "fc9bf0ddbd9e5e810dd35cf1edeec6edbad10c50206321a04d7f77fb9219c28c",
+          "query_sha256": "fb5b67515be0378ca691e11ab68c18100e19b9902e6f78b1f6b6e543d074ae04"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      }
+    },
+    {
+      "dataset": "proxy256",
+      "round": 1,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "build_ratio": 2.4284392100141097,
+      "query_ratio": 1.012293955226525,
+      "vram_ratio": 1.0005945699119085,
+      "quality": {
+        "recall_delta_top10": -0.0009765625,
+        "recall_delta_top100": -0.0009057617187500089
+      },
+      "development_gates_pass": true,
+      "baseline": {
+        "build_seconds": 50.3720834441483,
+        "ddl_seconds": 50.33292414434254,
+        "first_query_seconds": 0.039159299805760384,
+        "top10": {
+          "seconds": 45.08026539860293,
+          "qps": 90.86015718370057,
+          "recall": 0.9511962890625,
+          "p95_seconds": 0.011352912872098386,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 44.946174774784595,
+          "qps": 91.13122575000332,
+          "recall": 0.899033203125,
+          "p95_seconds": 0.011524411616846919,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 861126656,
+        "binary_sha256": "b3b893e9677a3a7879a61aa51b16cf9d71a855fed2e7f93b7d19d8b60f9d94d9",
+        "bridge_sha256": "030b36246e3fc4e92743e432d00979f7a729fdf36fb8b6ff482b75fb008e9da6",
+        "data": {
+          "source": "Synthetic standard normal seed 20261030; NOT Hidden250K",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 256,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "c7f972c95d66b6e89442c1be9571e360b5424221c0f688cb03c16918aed47553",
+          "query_sha256": "59a94a5c702da8f77f0a7f2a88c6dc018f63cf337a6e8ecc58b3dd8a1f12532b"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      },
+      "candidate": {
+        "build_seconds": 20.74257541075349,
+        "ddl_seconds": 20.696294545661658,
+        "first_query_seconds": 0.04628086509183049,
+        "top10": {
+          "seconds": 44.06609879992902,
+          "qps": 92.95127346300502,
+          "recall": 0.9502197265625,
+          "p95_seconds": 0.011302278377115726,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 44.870541382115334,
+          "qps": 91.28483574821762,
+          "recall": 0.89812744140625,
+          "p95_seconds": 0.01155095745343715,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 861638656,
+        "binary_sha256": "f49dd1d632b2c672f07396707a8561c476d06e03314e9dd99415eeed8a5187d3",
+        "bridge_sha256": "6e88bba49d44b44e9569e5b5bf225d5a91f0fa837568bba668c8f4caa882fc1a",
+        "data": {
+          "source": "Synthetic standard normal seed 20261030; NOT Hidden250K",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 256,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "c7f972c95d66b6e89442c1be9571e360b5424221c0f688cb03c16918aed47553",
+          "query_sha256": "59a94a5c702da8f77f0a7f2a88c6dc018f63cf337a6e8ecc58b3dd8a1f12532b"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      }
+    },
+    {
+      "dataset": "sift250k",
+      "round": 2,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "build_ratio": 2.8867212841711254,
+      "query_ratio": 1.0030507282151793,
+      "vram_ratio": 1.0000055884029462,
+      "quality": {
+        "recall_delta_top10": -9.76562500000222e-05,
+        "recall_delta_top100": 0.0
+      },
+      "development_gates_pass": true,
+      "baseline": {
+        "build_seconds": 47.099841131363064,
+        "ddl_seconds": 47.057679190300405,
+        "first_query_seconds": 0.042161941062659025,
+        "top10": {
+          "seconds": 29.191810293123126,
+          "qps": 140.31332619905785,
+          "recall": 1.0,
+          "p95_seconds": 0.007508070091716945,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 30.065208136104047,
+          "qps": 136.23720752098455,
+          "recall": 0.99996826171875,
+          "p95_seconds": 0.007909862091764808,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 732946432,
+        "binary_sha256": "b3b893e9677a3a7879a61aa51b16cf9d71a855fed2e7f93b7d19d8b60f9d94d9",
+        "bridge_sha256": "030b36246e3fc4e92743e432d00979f7a729fdf36fb8b6ff482b75fb008e9da6",
+        "data": {
+          "source": "Public SIFT development subset transported as NPZ",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 128,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "fc9bf0ddbd9e5e810dd35cf1edeec6edbad10c50206321a04d7f77fb9219c28c",
+          "query_sha256": "fb5b67515be0378ca691e11ab68c18100e19b9902e6f78b1f6b6e543d074ae04"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      },
+      "candidate": {
+        "build_seconds": 16.31603348394856,
+        "ddl_seconds": 16.282596355769783,
+        "first_query_seconds": 0.03343712817877531,
+        "top10": {
+          "seconds": 28.923799800686538,
+          "qps": 141.6134819154286,
+          "recall": 0.99990234375,
+          "p95_seconds": 0.007582091493532062,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 30.159497466869652,
+          "qps": 135.8112814876798,
+          "recall": 0.99996826171875,
+          "p95_seconds": 0.007910446962341666,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 732950528,
+        "binary_sha256": "f49dd1d632b2c672f07396707a8561c476d06e03314e9dd99415eeed8a5187d3",
+        "bridge_sha256": "6e88bba49d44b44e9569e5b5bf225d5a91f0fa837568bba668c8f4caa882fc1a",
+        "data": {
+          "source": "Public SIFT development subset transported as NPZ",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 128,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "fc9bf0ddbd9e5e810dd35cf1edeec6edbad10c50206321a04d7f77fb9219c28c",
+          "query_sha256": "fb5b67515be0378ca691e11ab68c18100e19b9902e6f78b1f6b6e543d074ae04"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      }
+    },
+    {
+      "dataset": "proxy256",
+      "round": 2,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "build_ratio": 2.388705957645951,
+      "query_ratio": 0.9899927063478333,
+      "vram_ratio": 1.0000095131638405,
+      "quality": {
+        "recall_delta_top10": 0.0002929687499999556,
+        "recall_delta_top100": -0.00011962890625005773
+      },
+      "development_gates_pass": true,
+      "baseline": {
+        "build_seconds": 48.59755588602275,
+        "ddl_seconds": 48.55832157609984,
+        "first_query_seconds": 0.039234309922903776,
+        "top10": {
+          "seconds": 44.0123975048773,
+          "qps": 93.0646870474642,
+          "recall": 0.9508056640625,
+          "p95_seconds": 0.01116820948664099,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 44.780933890957385,
+          "qps": 91.46749842184745,
+          "recall": 0.898388671875,
+          "p95_seconds": 0.011472577461972833,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 861122560,
+        "binary_sha256": "b3b893e9677a3a7879a61aa51b16cf9d71a855fed2e7f93b7d19d8b60f9d94d9",
+        "bridge_sha256": "030b36246e3fc4e92743e432d00979f7a729fdf36fb8b6ff482b75fb008e9da6",
+        "data": {
+          "source": "Synthetic standard normal seed 20261030; NOT Hidden250K",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 256,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "c7f972c95d66b6e89442c1be9571e360b5424221c0f688cb03c16918aed47553",
+          "query_sha256": "59a94a5c702da8f77f0a7f2a88c6dc018f63cf337a6e8ecc58b3dd8a1f12532b"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      },
+      "candidate": {
+        "build_seconds": 20.34472084371373,
+        "ddl_seconds": 20.30658497195691,
+        "first_query_seconds": 0.03813587175682187,
+        "top10": {
+          "seconds": 44.81620969157666,
+          "qps": 91.39550239050794,
+          "recall": 0.9510986328125,
+          "p95_seconds": 0.011240572785027325,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 44.871342114172876,
+          "qps": 91.28320676430702,
+          "recall": 0.89826904296875,
+          "p95_seconds": 0.011538364924490452,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 861130752,
+        "binary_sha256": "f49dd1d632b2c672f07396707a8561c476d06e03314e9dd99415eeed8a5187d3",
+        "bridge_sha256": "6e88bba49d44b44e9569e5b5bf225d5a91f0fa837568bba668c8f4caa882fc1a",
+        "data": {
+          "source": "Synthetic standard normal seed 20261030; NOT Hidden250K",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 256,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "c7f972c95d66b6e89442c1be9571e360b5424221c0f688cb03c16918aed47553",
+          "query_sha256": "59a94a5c702da8f77f0a7f2a88c6dc018f63cf337a6e8ecc58b3dd8a1f12532b"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      }
+    },
+    {
+      "dataset": "sift250k",
+      "round": 3,
+      "order": [
+        "baseline",
+        "candidate"
+      ],
+      "build_ratio": 2.7839121262320314,
+      "query_ratio": 1.014475711834058,
+      "vram_ratio": 0.9999888235064014,
+      "quality": {
+        "recall_delta_top10": -4.882812500006661e-05,
+        "recall_delta_top100": 9.765624999991118e-06
+      },
+      "development_gates_pass": true,
+      "baseline": {
+        "build_seconds": 46.847383548971266,
+        "ddl_seconds": 46.799572112970054,
+        "first_query_seconds": 0.047811436001211405,
+        "top10": {
+          "seconds": 28.428938705008477,
+          "qps": 144.07854062024433,
+          "recall": 0.999951171875,
+          "p95_seconds": 0.007597128627821803,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 30.473366234917194,
+          "qps": 134.4124560583233,
+          "recall": 0.99995849609375,
+          "p95_seconds": 0.0080943345092237,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 732966912,
+        "binary_sha256": "b3b893e9677a3a7879a61aa51b16cf9d71a855fed2e7f93b7d19d8b60f9d94d9",
+        "bridge_sha256": "030b36246e3fc4e92743e432d00979f7a729fdf36fb8b6ff482b75fb008e9da6",
+        "data": {
+          "source": "Public SIFT development subset transported as NPZ",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 128,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "fc9bf0ddbd9e5e810dd35cf1edeec6edbad10c50206321a04d7f77fb9219c28c",
+          "query_sha256": "fb5b67515be0378ca691e11ab68c18100e19b9902e6f78b1f6b6e543d074ae04"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      },
+      "candidate": {
+        "build_seconds": 16.827895933762193,
+        "ddl_seconds": 16.794169459026307,
+        "first_query_seconds": 0.03372647473588586,
+        "top10": {
+          "seconds": 28.310486210975796,
+          "qps": 144.68137245950962,
+          "recall": 0.99990234375,
+          "p95_seconds": 0.0074621724197641015,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 29.73380182730034,
+          "qps": 137.7556769830632,
+          "recall": 0.99996826171875,
+          "p95_seconds": 0.007875198614783585,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 732958720,
+        "binary_sha256": "f49dd1d632b2c672f07396707a8561c476d06e03314e9dd99415eeed8a5187d3",
+        "bridge_sha256": "6e88bba49d44b44e9569e5b5bf225d5a91f0fa837568bba668c8f4caa882fc1a",
+        "data": {
+          "source": "Public SIFT development subset transported as NPZ",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 128,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "fc9bf0ddbd9e5e810dd35cf1edeec6edbad10c50206321a04d7f77fb9219c28c",
+          "query_sha256": "fb5b67515be0378ca691e11ab68c18100e19b9902e6f78b1f6b6e543d074ae04"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      }
+    },
+    {
+      "dataset": "proxy256",
+      "round": 3,
+      "order": [
+        "candidate",
+        "baseline"
+      ],
+      "build_ratio": 2.4811634411866343,
+      "query_ratio": 1.019417982482686,
+      "vram_ratio": 0.9999857305936073,
+      "quality": {
+        "recall_delta_top10": 0.0010009765624999778,
+        "recall_delta_top100": 1.7089843749928946e-05
+      },
+      "development_gates_pass": true,
+      "baseline": {
+        "build_seconds": 49.747822518926114,
+        "ddl_seconds": 49.701634525321424,
+        "first_query_seconds": 0.046187993604689837,
+        "top10": {
+          "seconds": 44.09398510120809,
+          "qps": 92.8924884108009,
+          "recall": 0.95009765625,
+          "p95_seconds": 0.011338400654494762,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 45.713966344017535,
+          "qps": 89.6006259700988,
+          "recall": 0.89835693359375,
+          "p95_seconds": 0.01172776147723198,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 861143040,
+        "binary_sha256": "b3b893e9677a3a7879a61aa51b16cf9d71a855fed2e7f93b7d19d8b60f9d94d9",
+        "bridge_sha256": "030b36246e3fc4e92743e432d00979f7a729fdf36fb8b6ff482b75fb008e9da6",
+        "data": {
+          "source": "Synthetic standard normal seed 20261030; NOT Hidden250K",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 256,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "c7f972c95d66b6e89442c1be9571e360b5424221c0f688cb03c16918aed47553",
+          "query_sha256": "59a94a5c702da8f77f0a7f2a88c6dc018f63cf337a6e8ecc58b3dd8a1f12532b"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      },
+      "candidate": {
+        "build_seconds": 20.05019971402362,
+        "ddl_seconds": 20.011160695925355,
+        "first_query_seconds": 0.03903901809826493,
+        "top10": {
+          "seconds": 43.744285616092384,
+          "qps": 93.6350872419594,
+          "recall": 0.9510986328125,
+          "p95_seconds": 0.011382259544916451,
+          "valid_unique_ids": true
+        },
+        "top100": {
+          "seconds": 44.340679708402604,
+          "qps": 92.37567008301417,
+          "recall": 0.8983740234375,
+          "p95_seconds": 0.011435477179475129,
+          "valid_unique_ids": true
+        },
+        "restart_sql_ok": true,
+        "vram_peak_bytes": 861130752,
+        "binary_sha256": "f49dd1d632b2c672f07396707a8561c476d06e03314e9dd99415eeed8a5187d3",
+        "bridge_sha256": "6e88bba49d44b44e9569e5b5bf225d5a91f0fa837568bba668c8f4caa882fc1a",
+        "data": {
+          "source": "Synthetic standard normal seed 20261030; NOT Hidden250K",
+          "rows": 250000,
+          "queries": 4096,
+          "dim": 256,
+          "dtype": "FP32",
+          "metric": "L2",
+          "id_formula": "3*i-700000001",
+          "truth": "exact FP32 squared L2 via blocked BLAS; deterministic distance/ID ordering within selected Top100",
+          "boundary_ties": "Top100 boundary ties may select different equally distant IDs; raw results retained",
+          "base_sha256": "c7f972c95d66b6e89442c1be9571e360b5424221c0f688cb03c16918aed47553",
+          "query_sha256": "59a94a5c702da8f77f0a7f2a88c6dc018f63cf337a6e8ecc58b3dd8a1f12532b"
+        },
+        "query_count_per_k": 4096,
+        "status": "PASS_DEVELOPMENT_EXECUTION"
+      }
+    }
+  ],
+  "environment": {
+    "recorded_at": "2026-10-30T18:56:53+08:00",
+    "python": "3.12.3",
+    "kernel": "6.8.0-79-generic",
+    "numpy": "2.4.6",
+    "pymysql": "2.2.8",
+    "cpu_visible": 128,
+    "cpu_quota": "1600000 100000",
+    "memory_limit_bytes": 59055800320,
+    "development_cpu_count_parameter": 16,
+    "memory_budget": "8G",
+    "environment": {
+      "OMP_NUM_THREADS": null,
+      "OMP_WAIT_POLICY": null,
+      "KMP_BLOCKTIME": null,
+      "OPENBLAS_NUM_THREADS": null
+    },
+    "source_commit": "cd22ba97017f289c45f9f243c92c9110df9f0f57",
+    "official_result": null,
+    "cmake": "cmake version 3.31.10",
+    "gcc": "13.3.0",
+    "rust": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "rocm": "7.2.4",
+    "assigned_dri": [
+      {
+        "name": "/dev/dri/card4",
+        "major": 226,
+        "minor": 4
+      },
+      {
+        "name": "/dev/dri/renderD131",
+        "major": 226,
+        "minor": 131
+      }
+    ]
+  },
+  "gpu_path": {
+    "runtime_commit": "cd22ba97017f289c45f9f243c92c9110df9f0f57",
+    "profiled_query_count_per_k": 16,
+    "scope": "real offline DDL and single-row SQL on the development container",
+    "phases": [
+      {
+        "phase": "ddl",
+        "kernels": 544,
+        "counts": {
+          "nn_descent": 100,
+          "cagra_search": 0
+        },
+        "begin_ns": 2455636808558951,
+        "end_ns": 2455654309591815
+      },
+      {
+        "phase": "first_query",
+        "kernels": 6,
+        "counts": {
+          "nn_descent": 0,
+          "cagra_search": 1
+        },
+        "begin_ns": 2455654309591815,
+        "end_ns": 2455654399152580
+      },
+      {
+        "phase": "top10",
+        "kernels": 64,
+        "counts": {
+          "nn_descent": 0,
+          "cagra_search": 16
+        },
+        "begin_ns": 2455654400708577,
+        "end_ns": 2455654506751904
+      },
+      {
+        "phase": "top100",
+        "kernels": 64,
+        "counts": {
+          "nn_descent": 0,
+          "cagra_search": 16
+        },
+        "begin_ns": 2455654514430995,
+        "end_ns": 2455654623103619
+      }
+    ]
+  },
+  "resources": [
+    {
+      "run": "verified-candidate-cpu-sift",
+      "peak_rss_bytes": 1229324288,
+      "peak_hwm_bytes": 1255079936,
+      "peak_cgroup_memory_bytes": 55517851648,
+      "sampled_peak_vram_bytes": 26759168
+    },
+    {
+      "run": "verified-candidate-profile",
+      "peak_rss_bytes": 2689318912,
+      "peak_hwm_bytes": 2689318912,
+      "peak_cgroup_memory_bytes": 57004974080,
+      "sampled_peak_vram_bytes": 732962816
+    },
+    {
+      "run": "verified-proxy256-baseline-r1",
+      "peak_rss_bytes": 3684548608,
+      "peak_hwm_bytes": 3695783936,
+      "peak_cgroup_memory_bytes": 59033923584,
+      "sampled_peak_vram_bytes": 861126656
+    },
+    {
+      "run": "verified-proxy256-baseline-r2",
+      "peak_rss_bytes": 3893035008,
+      "peak_hwm_bytes": 3909812224,
+      "peak_cgroup_memory_bytes": 58818768896,
+      "sampled_peak_vram_bytes": 861122560
+    },
+    {
+      "run": "verified-proxy256-baseline-r3",
+      "peak_rss_bytes": 3684429824,
+      "peak_hwm_bytes": 3686526976,
+      "peak_cgroup_memory_bytes": 58635296768,
+      "sampled_peak_vram_bytes": 861143040
+    },
+    {
+      "run": "verified-proxy256-candidate-r1",
+      "peak_rss_bytes": 3838820352,
+      "peak_hwm_bytes": 3847385088,
+      "peak_cgroup_memory_bytes": 59032608768,
+      "sampled_peak_vram_bytes": 861638656
+    },
+    {
+      "run": "verified-proxy256-candidate-r2",
+      "peak_rss_bytes": 3826253824,
+      "peak_hwm_bytes": 3831496704,
+      "peak_cgroup_memory_bytes": 59032346624,
+      "sampled_peak_vram_bytes": 861130752
+    },
+    {
+      "run": "verified-proxy256-candidate-r3",
+      "peak_rss_bytes": 3683622912,
+      "peak_hwm_bytes": 3683622912,
+      "peak_cgroup_memory_bytes": 58038185984,
+      "sampled_peak_vram_bytes": 861130752
+    },
+    {
+      "run": "verified-sift250k-baseline-r1",
+      "peak_rss_bytes": 2676609024,
+      "peak_hwm_bytes": 2676609024,
+      "peak_cgroup_memory_bytes": 59032313856,
+      "sampled_peak_vram_bytes": 732958720
+    },
+    {
+      "run": "verified-sift250k-baseline-r2",
+      "peak_rss_bytes": 2681974784,
+      "peak_hwm_bytes": 2703994880,
+      "peak_cgroup_memory_bytes": 57123160064,
+      "sampled_peak_vram_bytes": 732946432
+    },
+    {
+      "run": "verified-sift250k-baseline-r3",
+      "peak_rss_bytes": 2678071296,
+      "peak_hwm_bytes": 2678071296,
+      "peak_cgroup_memory_bytes": 57456807936,
+      "sampled_peak_vram_bytes": 732966912
+    },
+    {
+      "run": "verified-sift250k-candidate-r1",
+      "peak_rss_bytes": 2629488640,
+      "peak_hwm_bytes": 2629701632,
+      "peak_cgroup_memory_bytes": 56870965248,
+      "sampled_peak_vram_bytes": 732946432
+    },
+    {
+      "run": "verified-sift250k-candidate-r2",
+      "peak_rss_bytes": 2628763648,
+      "peak_hwm_bytes": 2628763648,
+      "peak_cgroup_memory_bytes": 57386827776,
+      "sampled_peak_vram_bytes": 732950528
+    },
+    {
+      "run": "verified-sift250k-candidate-r3",
+      "peak_rss_bytes": 2629783552,
+      "peak_hwm_bytes": 2631454720,
+      "peak_cgroup_memory_bytes": 56904392704,
+      "sampled_peak_vram_bytes": 732958720
+    }
+  ],
+  "cpu_comparison": {
+    "build_seconds": 82.12003796407953,
+    "top10": {
+      "seconds": 1.1372823491692543,
+      "qps": 3601.568249953046,
+      "recall": 0.9809814453125,
+      "p95_seconds": 0.00030185701325535774,
+      "valid_unique_ids": true
+    },
+    "top100": {
+      "seconds": 2.7415608898736537,
+      "qps": 1494.0394047526577,
+      "recall": 0.9497802734375,
+      "p95_seconds": 0.0007390957325696945,
+      "valid_unique_ids": true
+    },
+    "restart_sql_ok": true,
+    "binary_sha256": "f49dd1d632b2c672f07396707a8561c476d06e03314e9dd99415eeed8a5187d3",
+    "bridge_sha256": "6e88bba49d44b44e9569e5b5bf225d5a91f0fa837568bba668c8f4caa882fc1a",
+    "status": "PASS_DEVELOPMENT_EXECUTION"
+  }
+}

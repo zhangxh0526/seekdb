@@ -2,6 +2,8 @@
 
 基线为 V5 冻结 commit `634888d9b037153fa143d2c913ba4b25503e1d62`。实现保留 FP32 输入、100 轮 NN-descent、128/256 图度数和固定 hipVS CAGRA 搜索。
 
+[实际测量报告](docs/gpu-vector-index-hipvs-cuvs/contest/RESULTS.md)包含三轮六组配对、CPU/GPU 对比、GPU 路径、资源与质量证据。16 核开发环境的 SIFT 构建几何平均加速为 2.854×，256 维合成代理为 2.432×；正式平台成绩尚未产生。
+
 ## 实现
 
 `tools/hipvs_bridge/seekdb_cuvs_bridge.c` 在创建 GPU 资源和建图期间，将 LLVM OpenMP 的新线程默认值限制为最多 16 个，并保留调用线程已有的更低限制。CAGRA 内部新建线程，因此必须同时管理新线程默认值和当前线程设置。等待中的 OpenMP 工作线程立即休眠，避免在 GPU 执行时消耗 CPU 配额。临时配置由进程内互斥锁串行管理，构建成功或失败后均恢复调用线程及新线程默认的数量和等待设置。无法读取默认值时使用原 GPU 构建路径。该限制与输入维度、数据内容和评测阶段无关。
