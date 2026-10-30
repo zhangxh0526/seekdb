@@ -52,39 +52,50 @@ fail_res: cuvsResourcesDestroy(h->res); free(h);
 
 static pthread_mutex_t sk_cuvs_build_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+typedef struct {
+  int threads, blocktime;
+} sk_cuvs_omp_settings;
+
 static void* sk_cuvs_read_omp_default(void* out)
 {
-  *(int*)out = omp_get_max_threads();
+  sk_cuvs_omp_settings* settings = (sk_cuvs_omp_settings*)out;
+  settings->threads = omp_get_max_threads();
+  settings->blocktime = kmp_get_blocktime();
   return NULL;
 }
 
-static void sk_cuvs_set_omp_default(int threads)
+static void sk_cuvs_set_omp_default(sk_cuvs_omp_settings settings)
 {
-  char settings[64];
-  snprintf(settings, sizeof(settings), "OMP_NUM_THREADS=%d", threads);
-  kmp_set_defaults(settings);
+  char value[64];
+  snprintf(value, sizeof(value), "OMP_NUM_THREADS=%d", settings.threads);
+  kmp_set_defaults(value);
+  snprintf(value, sizeof(value), "KMP_BLOCKTIME=%d", settings.blocktime);
+  kmp_set_defaults(value);
 }
 
 void* seekdb_cuvs_build(const float* base, long n, long dim)
 {
   if (pthread_mutex_lock(&sk_cuvs_build_mutex) != 0) return NULL;
-  const int caller_threads = omp_get_max_threads();
-  int default_threads = 0;
+  const sk_cuvs_omp_settings caller = {omp_get_max_threads(), kmp_get_blocktime()};
+  sk_cuvs_omp_settings defaults = {0, 0};
   pthread_t probe;
   // A fresh root thread observes the default inherited by CAGRA's own threads.
-  if (pthread_create(&probe, NULL, sk_cuvs_read_omp_default, &default_threads) == 0) {
+  if (pthread_create(&probe, NULL, sk_cuvs_read_omp_default, &defaults) == 0) {
     pthread_join(probe, NULL);
   }
-  int build_threads = caller_threads < 8 ? caller_threads : 8;
-  if (default_threads > 0) {
-    if (default_threads < build_threads) build_threads = default_threads;
-    if (default_threads != build_threads) sk_cuvs_set_omp_default(build_threads);
-    omp_set_num_threads(build_threads);
+  sk_cuvs_omp_settings build = {caller.threads < 16 ? caller.threads : 16, 0};
+  if (defaults.threads > 0) {
+    if (defaults.threads < build.threads) build.threads = defaults.threads;
+    // Idle workers should sleep while the GPU executes, instead of consuming CPU quota.
+    sk_cuvs_set_omp_default(build);
+    omp_set_num_threads(build.threads);
+    kmp_set_blocktime(build.blocktime);
   }
   void* result = sk_cuvs_build_index(base, n, dim);
-  if (default_threads > 0) {
-    if (default_threads != build_threads) sk_cuvs_set_omp_default(default_threads);
-    omp_set_num_threads(caller_threads);
+  if (defaults.threads > 0) {
+    sk_cuvs_set_omp_default(defaults);
+    omp_set_num_threads(caller.threads);
+    kmp_set_blocktime(caller.blocktime);
   }
   pthread_mutex_unlock(&sk_cuvs_build_mutex);
   return result;
