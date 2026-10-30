@@ -39,6 +39,81 @@ namespace oceanbase
 {
 namespace sql
 {
+namespace
+{
+// Without a properties argument, the inner parser name and the reformed properties only depend on the
+// parser name argument, and a loaded dictionary stays loaded. Every thread remembers its last
+// resolution so that repeated calls skip parsing, rebuilding and serializing the properties.
+class ObTokenizeParserCache final
+{
+public:
+  bool get(const ObString &raw_parser_name,
+           const ObCharsetType charset,
+           ObIAllocator &allocator,
+           ObString &parser_name,
+           ObString &properties) const
+  {
+    bool hit = false;
+    if (valid_ && charset == charset_
+        && 0 == raw_parser_name.compare(ObString(raw_name_len_, raw_name_))) {
+      // copied out: the strings must not change if a nested call refills the cache
+      hit = OB_SUCCESS == ob_write_string(allocator, ObString(parser_name_len_, parser_name_), parser_name)
+            && OB_SUCCESS == ob_write_string(allocator, ObString(props_len_, props_), properties);
+    }
+    return hit;
+  }
+  void put(const ObString &raw_parser_name,
+           const ObCharsetType charset,
+           const ObString &parser_name,
+           const ObString &properties)
+  {
+    valid_ = raw_parser_name.length() <= MAX_NAME_LEN
+             && parser_name.length() <= MAX_NAME_LEN
+             && properties.length() <= MAX_PROPS_LEN;
+    if (valid_) {
+      charset_ = charset;
+      raw_name_len_ = raw_parser_name.length();
+      parser_name_len_ = parser_name.length();
+      props_len_ = properties.length();
+      MEMCPY(raw_name_, raw_parser_name.ptr(), raw_name_len_);
+      MEMCPY(parser_name_, parser_name.ptr(), parser_name_len_);
+      MEMCPY(props_, properties.ptr(), props_len_);
+    }
+  }
+private:
+  static const int64_t MAX_NAME_LEN = storage::OB_FT_PARSER_NAME_LENGTH;
+  static const int64_t MAX_PROPS_LEN = 512;
+  bool valid_;
+  ObCharsetType charset_;
+  int32_t raw_name_len_;
+  int32_t parser_name_len_;
+  int32_t props_len_;
+  char raw_name_[MAX_NAME_LEN];
+  char parser_name_[MAX_NAME_LEN];
+  char props_[MAX_PROPS_LEN];
+};
+
+thread_local ObTokenizeParserCache tokenize_parser_cache;
+
+int eval_raw_parser_name(const ObExpr &expr, ObEvalCtx &ctx, ObString &raw_parser_name)
+{
+  int ret = OB_SUCCESS;
+  ObDatum *parser_datum = nullptr;
+  if (expr.arg_cnt_ < 2) {
+    raw_parser_name = ObString::make_string(OB_DEFAULT_FULLTEXT_PARSER_NAME);
+  } else if (OB_FAIL(expr.args_[1]->eval(ctx, parser_datum))) {
+  } else {
+    if (parser_datum->is_null()) {
+      raw_parser_name = ObString::make_string(OB_DEFAULT_FULLTEXT_PARSER_NAME);
+    } else {
+      ObString name = parser_datum->get_string();
+      raw_parser_name = name.trim();
+    }
+  }
+  return ret;
+}
+} // namespace
+
 ObExprTokenize::ObExprTokenize(common::ObIAllocator &alloc)
     : ObStringExprOperator(alloc,
                            T_FUN_TOKENIZE,
@@ -210,6 +285,17 @@ int ObExprTokenize::parse_param(const ObExpr &expr,
   if (OB_UNLIKELY(expr.arg_cnt_ < 1 || expr.arg_cnt_ > 3)) {
     ret = OB_INVALID_ARGUMENT;
   } else if (OB_FAIL(parse_fulltext(expr, ctx, param))) {
+  } else if (expr.arg_cnt_ < 3) {
+    const ObCharsetType charset = ObCharset::charset_type_by_coll(param.meta_.get_collation_type());
+    ObString raw_parser_name;
+    if (OB_FAIL(eval_raw_parser_name(expr, ctx, raw_parser_name))) {
+    } else if (tokenize_parser_cache.get(raw_parser_name, charset, allocator, param.parser_name_, param.properties_)) {
+    } else if (OB_FAIL(construct_ft_parser_inner_name(raw_parser_name, param))) {
+    } else if (OB_FAIL(param.reform_parser_properties(param.properties_))) {
+    } else if (OB_FAIL(param.try_load_dictionary_for_ik())) {
+    } else {
+      tokenize_parser_cache.put(raw_parser_name, charset, param.parser_name_, param.properties_);
+    }
   } else if (OB_FAIL(parse_parser_name(expr, ctx, param))) {
   } else if (OB_FAIL(parse_parser_properties(expr, ctx, temp_allocator, param))) {
   } else if (OB_FAIL(param.reform_parser_properties(param.properties_))) {
@@ -316,22 +402,9 @@ int ObExprTokenize::parse_fulltext(const ObExpr &expr, ObEvalCtx &ctx, TokenizeP
 int ObExprTokenize::parse_parser_name(const ObExpr &expr, ObEvalCtx &ctx, TokenizeParam &param)
 {
   int ret = OB_SUCCESS;
-  ObDatum *parser_datum = nullptr;
   ObString raw_parser_name;
 
-  if (expr.arg_cnt_ < 2) {
-    raw_parser_name = ObString::make_string(OB_DEFAULT_FULLTEXT_PARSER_NAME);
-  } else if (OB_FAIL(expr.args_[1]->eval(ctx, parser_datum))) {
-  } else {
-    if (parser_datum->is_null()) {
-      raw_parser_name = ObString::make_string(OB_DEFAULT_FULLTEXT_PARSER_NAME);
-    } else {
-      ObString name = parser_datum->get_string();
-      raw_parser_name = name.trim();
-    }
-  }
-
-  if (OB_FAIL(ret)) {
+  if (OB_FAIL(eval_raw_parser_name(expr, ctx, raw_parser_name))) {
     // already logged
   } else if (OB_FAIL(construct_ft_parser_inner_name(raw_parser_name, param))) {
   }
