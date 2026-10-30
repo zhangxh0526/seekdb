@@ -571,7 +571,21 @@ int ObCharset::strcmpsp(ObCollationType collation_type,
                         bool cmp_endspace)
 {
   int result = 0;
-  if (is_argument_valid(collation_type, str1, str1_len, str2, str2_len)) {
+  const bool valid_strs = str1_len >= 0 && str2_len >= 0
+                          && (OB_NOT_NULL(str1) || 0 == str1_len)
+                          && (OB_NOT_NULL(str2) || 0 == str2_len);
+  if (OB_LIKELY(valid_strs) && CS_TYPE_BINARY == collation_type) {
+    // same as ob_strnncollsp_binary, without the charset lookup and the handler call
+    const int64_t len = MIN(str1_len, str2_len);
+    result = 0 == len ? 0 : MEMCMP(str1, str2, len);
+    if (0 == result) {
+      result = static_cast<int>(str1_len - str2_len);
+    }
+  } else if (OB_LIKELY(valid_strs) && str1_len == str2_len
+             && (0 == str1_len || 0 == MEMCMP(str1, str2, str1_len))) {
+    // byte-identical strings are equal under every collation, e.g. the repeated words of a
+    // fulltext index build sort
+  } else if (is_argument_valid(collation_type, str1, str1_len, str2, str2_len)) {
     const ObCharsetInfo *cs = get_charset(collation_type);
     result = cs->coll->strnncollsp(cs,
                                 reinterpret_cast<const unsigned char *>(str1),
