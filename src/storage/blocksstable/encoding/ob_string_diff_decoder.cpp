@@ -165,10 +165,13 @@ int ObStringDiffDecoder::batch_decode(
     if (OB_FAIL(ret)) {
     } else if (OB_ISNULL(buf = static_cast<char *>(ctx.allocator_->alloc(buf_size * row_cap)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
-    } else {
-      for (int64_t i = 0; i < row_cap; ++i) {
-        header_->copy_string(ObStringDiffHeader::LeftToRight(), std::logical_not<uint8_t>(),
-            header_->common_data(), buf + i * buf_size);
+    } else if (row_cap > 0) {
+      // Scatter the common bytes once, then copy the whole string as a template for the other rows;
+      // the diff bytes of every non-null row are overwritten below.
+      header_->copy_string(ObStringDiffHeader::LeftToRight(), std::logical_not<uint8_t>(),
+          header_->common_data(), buf);
+      for (int64_t i = 1; i < row_cap; ++i) {
+        MEMCPY(buf + i * buf_size, buf, string_size);
       }
     }
 
@@ -177,6 +180,19 @@ int ObStringDiffDecoder::batch_decode(
       int64_t row_id = 0;
       const unsigned char *cell_data = nullptr;
       char *str_ptr = nullptr;
+      // the usual layout (e.g. sequential ids) has one run of differing bytes: copy it directly
+      int64_t diff_seg_cnt = 0;
+      int64_t diff_off = 0;
+      int64_t diff_len = 0;
+      for (int64_t i = 0, pos = 0; i < header_->diff_desc_cnt_; ++i) {
+        if (header_->diff_descs_[i].diff_) {
+          ++diff_seg_cnt;
+          diff_off = pos;
+          diff_len = header_->diff_descs_[i].count_;
+        }
+        pos += header_->diff_descs_[i].count_;
+      }
+      const bool single_diff_seg = !header_->is_hex_packing() && 1 == diff_seg_cnt;
       for (int64_t i = 0; i < row_cap; ++i) {
         if (ctx.has_extend_value() && datums[i].is_null()) {
           // Skip
@@ -184,7 +200,9 @@ int ObStringDiffDecoder::batch_decode(
           row_id = row_ids[i];
           cell_data = col_data + data_offset + row_id * header_->length_;
           str_ptr = buf + i * buf_size;
-          if (header_->is_hex_packing()) {
+          if (single_diff_seg) {
+            MEMCPY(str_ptr + diff_off, cell_data, diff_len);
+          } else if (header_->is_hex_packing()) {
             ObHexStringUnpacker unpacker(header_->hex_char_array(),
                 reinterpret_cast<const unsigned char *>(cell_data));
             header_->copy_hex_string(unpacker,
