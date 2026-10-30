@@ -4,7 +4,7 @@
 
 ## 实现
 
-`tools/hipvs_bridge/seekdb_cuvs_bridge.c` 在 GPU 建图期间将 OpenBLAS 工作线程限制为最多 8 个。冻结环境中的默认 64 线程会超过开发容器的 16 核配额。实现动态解析已加载的 OpenBLAS API，串行管理临时设置，并在成功或失败后恢复原线程数；没有这些 API 时继续使用原构建路径。该限制与输入维度、数据内容和评测阶段无关。
+`tools/hipvs_bridge/seekdb_cuvs_bridge.c` 在创建 GPU 资源和建图期间，将 LLVM OpenMP 的新线程默认值限制为最多 8 个，并保留调用线程已有的更低限制。CAGRA 内部新建线程，因此必须同时管理新线程默认值和当前线程设置。临时配置由进程内互斥锁串行管理，构建成功或失败后均恢复这两个线程数量。无法读取默认值时使用原 GPU 构建路径。该限制与输入维度、数据内容和评测阶段无关。
 
 Linux GPU 构建为内部 pthread 保留至少 1 MiB 栈，容纳 GPU profiler 的静态 TLS。该规则同时适用于显式申请小栈的线程池；普通运行和 profiler 使用相同代码。
 
@@ -43,5 +43,15 @@ python tools/hipvs_bridge/benchmark/sql_benchmark.py \
 ```
 
 每次 `--run` 必须是尚不存在的目录。`--profile --queries 16` 用于独立 GPU 路径采样；`--lib vsag` 用于 CPU SQL 对比。正式查询测试保持默认每组 4,096 条单行 SQL。具体数据散列、二进制/bridge 散列、原始查询结果、资源采样及阶段时间写入运行目录。
+
+线程配置恢复检查会真实并发构建两个 GPU 索引，验证不同调用线程的限制及新线程默认值均能恢复：
+
+```bash
+python tools/hipvs_bridge/benchmark/prepare_data.py \
+  --rows 10000 --queries 100 --dim 128 --out /workspace/amd-data/scope
+python tools/hipvs_bridge/benchmark/check_omp_scope.py \
+  --bridge /workspace/amd-bridge/libseekdb_cuvs_bridge.so \
+  --data /workspace/amd-data/scope
+```
 
 公开子集和固定种子的 256 维代理仅用于开发；正式 Hidden250K 门槛和成绩以平台结果为准。

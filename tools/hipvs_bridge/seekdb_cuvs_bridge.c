@@ -11,7 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <pthread.h>
-#include <dlfcn.h>
+#include <omp.h>
 
 typedef struct {
   cuvsResources_t        res;
@@ -20,9 +20,7 @@ typedef struct {
   long n, dim;
 } sk_cuvs_index;
 
-static pthread_mutex_t sk_cuvs_build_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-void* seekdb_cuvs_build(const float* base, long n, long dim)
+static void* sk_cuvs_build_index(const float* base, long n, long dim)
 {
   sk_cuvs_index* h = (sk_cuvs_index*)calloc(1, sizeof(*h));
   if (!h) return NULL;
@@ -41,25 +39,7 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->intermediate_graph_degree = 256;
   h->ip->nn_descent_niter = 100;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
-  {
-    /* The frozen library uses OpenBLAS for host work. Its default 64-worker
-       team oversubscribes the CPU quota. Serialize temporary process-wide
-       tuning and restore the caller's setting on both success and failure. */
-    void* blas = dlopen("libopenblas.so.0", RTLD_NOW | RTLD_NOLOAD);
-    int (*get_threads)(void) = blas ? (int (*)(void))dlsym(blas, "openblas_get_num_threads") : NULL;
-    void (*set_threads)(int) = blas ? (void (*)(int))dlsym(blas, "openblas_set_num_threads") : NULL;
-    if (pthread_mutex_lock(&sk_cuvs_build_mutex) != 0) {
-      if (blas) dlclose(blas);
-      goto fail_idx;
-    }
-    int threads = get_threads ? get_threads() : 0;
-    if (threads > 8 && set_threads) set_threads(8);
-    int status = cuvsCagraBuild(h->res, h->ip, &dset, h->idx);
-    if (threads > 8 && set_threads) set_threads(threads);
-    pthread_mutex_unlock(&sk_cuvs_build_mutex);
-    if (blas) dlclose(blas);
-    if (status != CUVS_SUCCESS) goto fail_idx;
-  }
+  if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
   h->n = n; h->dim = dim;
   return h;
 
@@ -68,6 +48,46 @@ fail_ip:  cuvsCagraIndexParamsDestroy(h->ip);
 fail_res: cuvsResourcesDestroy(h->res); free(h);
   fprintf(stderr, "[seekdb_cuvs] build failed: %s\n", cuvsGetLastErrorText());
   return NULL;
+}
+
+static pthread_mutex_t sk_cuvs_build_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void* sk_cuvs_read_omp_default(void* out)
+{
+  *(int*)out = omp_get_max_threads();
+  return NULL;
+}
+
+static void sk_cuvs_set_omp_default(int threads)
+{
+  char settings[64];
+  snprintf(settings, sizeof(settings), "OMP_NUM_THREADS=%d", threads);
+  kmp_set_defaults(settings);
+}
+
+void* seekdb_cuvs_build(const float* base, long n, long dim)
+{
+  if (pthread_mutex_lock(&sk_cuvs_build_mutex) != 0) return NULL;
+  const int caller_threads = omp_get_max_threads();
+  int default_threads = 0;
+  pthread_t probe;
+  // A fresh root thread observes the default inherited by CAGRA's own threads.
+  if (pthread_create(&probe, NULL, sk_cuvs_read_omp_default, &default_threads) == 0) {
+    pthread_join(probe, NULL);
+  }
+  int build_threads = caller_threads < 8 ? caller_threads : 8;
+  if (default_threads > 0) {
+    if (default_threads < build_threads) build_threads = default_threads;
+    if (default_threads != build_threads) sk_cuvs_set_omp_default(build_threads);
+    omp_set_num_threads(build_threads);
+  }
+  void* result = sk_cuvs_build_index(base, n, dim);
+  if (default_threads > 0) {
+    if (default_threads != build_threads) sk_cuvs_set_omp_default(default_threads);
+    omp_set_num_threads(caller_threads);
+  }
+  pthread_mutex_unlock(&sk_cuvs_build_mutex);
+  return result;
 }
 
 int seekdb_cuvs_search(void* handle, const float* query, long nq, long topk,
