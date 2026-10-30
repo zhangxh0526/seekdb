@@ -1894,8 +1894,15 @@ int ObTscCgService::generate_text_ir_ctdef(const ObLogTableScan &op,
 
   if (OB_SUCC(ret)) {
     root_ctdef = ir_scan_ctdef;
+    bool match_filter_implied = false;
     if (OB_FAIL(generate_text_ir_spec_exprs(tr_info, *ir_scan_ctdef))) {
+    } else if (!cg_ctx.is_func_lookup_ && !cg_ctx.is_es_match_ && !cg_ctx.is_merge_fts_index_
+        && !cg_ctx.is_vec_iter_func_lookup_
+        && OB_FAIL(check_match_filter_implied(op, tr_info, match_filter_implied))) {
+      LOG_WARN("failed to check whether match filter is implied", K(ret));
     } else {
+      ir_scan_ctdef->match_filter_implied_ = match_filter_implied;
+      ir_scan_ctdef->domain_id_unused_ = match_filter_implied && is_scan_output_id_free(op);
       const ObCostTableScanInfo *est_cost_info = op.get_est_cost_info();
       int partition_row_cnt = 0;
       if (nullptr == est_cost_info
@@ -3079,6 +3086,58 @@ int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_in
   }
 
   return ret;
+}
+
+// In natural language mode, BM25 relevance is strictly positive for every doc that contains at least one
+// query token, so a bare MATCH predicate (or BOOL(MATCH)) holds for exactly the docs of the posting-list
+// union. When nothing above the scan consumes the score, retrieval can skip scoring altogether.
+int ObTscCgService::check_match_filter_implied(const ObLogTableScan &op,
+                                               const ObTextRetrievalInfo &tr_info,
+                                               bool &is_implied) const
+{
+  int ret = OB_SUCCESS;
+  is_implied = false;
+  const ObRawExpr *filter = tr_info.pushdown_match_filter_;
+  const ObMatchFunRawExpr *match_expr = tr_info.match_expr_;
+  if (OB_ISNULL(filter) || OB_ISNULL(match_expr)) {
+  } else if (!tr_info.need_calc_relevance_ || tr_info.need_sort() || nullptr != tr_info.topk_limit_expr_
+      || nullptr != tr_info.topk_offset_expr_) {
+  } else if (match_expr->is_es_match() || NATURAL_LANGUAGE_MODE != match_expr->get_mode_flag()
+      || match_expr->get_columns_boosts().count() > 0) {
+  } else if (op.is_vec_idx_scan() || op.is_vec_adaptive_scan() || op.use_index_merge()
+      || op.has_func_lookup()) {
+  } else if (filter != match_expr
+      && !(T_OP_BOOL == filter->get_expr_type() && 1 == filter->get_param_count()
+           && filter->get_param_expr(0) == match_expr)) {
+  } else {
+    is_implied = true;
+    const ObIArray<ObRawExpr *> &output_exprs = op.get_output_exprs();
+    const ObIArray<ObRawExpr *> &filter_exprs = op.get_filter_exprs();
+    for (int64_t i = 0; is_implied && i < output_exprs.count(); ++i) {
+      if (OB_ISNULL(output_exprs.at(i)) || output_exprs.at(i)->has_flag(CNT_MATCH_EXPR)) {
+        is_implied = false;
+      }
+    }
+    for (int64_t i = 0; is_implied && i < filter_exprs.count(); ++i) {
+      if (OB_ISNULL(filter_exprs.at(i)) || filter_exprs.at(i)->has_flag(CNT_MATCH_EXPR)) {
+        is_implied = false;
+      }
+    }
+  }
+  return ret;
+}
+
+// True when the rows of the scan carry nothing but their count: no index back, no batch rescan, no filters
+// and only constant outputs (e.g. COUNT(*) over the scan).
+bool ObTscCgService::is_scan_output_id_free(const ObLogTableScan &op) const
+{
+  bool is_free = !op.get_index_back() && !op.use_batch() && op.get_filter_exprs().empty();
+  const ObIArray<ObRawExpr *> &output_exprs = op.get_output_exprs();
+  for (int64_t i = 0; is_free && i < output_exprs.count(); ++i) {
+    const ObRawExpr *expr = output_exprs.at(i);
+    is_free = nullptr != expr && expr->is_const_raw_expr();
+  }
+  return is_free;
 }
 
 int ObTscCgService::check_skip_index_validity(const ObTextRetrievalInfo &tr_info, bool &is_valid) const

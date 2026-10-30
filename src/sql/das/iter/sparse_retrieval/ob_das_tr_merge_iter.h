@@ -67,7 +67,9 @@ struct ObDASTRMergeIterParam : public ObDASIterParam
       uint32_t topk_mode_             : 1;
       uint32_t daat_mode_             : 1;
       uint32_t taat_mode_             : 1;
-      uint32_t reserve                : 28;
+      uint32_t skip_relevance_        : 1;
+      uint32_t skip_id_projection_    : 1;
+      uint32_t reserve                : 26;
     };
     uint32_t flags_;
   };

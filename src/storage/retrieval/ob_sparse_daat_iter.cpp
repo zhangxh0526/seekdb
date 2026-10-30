@@ -82,7 +82,9 @@ ObSRDaaTIterImpl::ObSRDaaTIterImpl()
     buffered_relevances_(),
     next_round_iter_idxes_(),
     next_round_cnt_(0),
-    set_datum_func_(nullptr)
+    set_datum_func_(nullptr),
+    is_uint64_id_(false),
+    is_binary_str_id_(false)
 {
 }
 
@@ -103,7 +105,10 @@ int ObSRDaaTIterImpl::init(
     dim_iters_ = &dim_iters;
     relevance_collector_ = &relevance_collector;
     const int64_t max_batch_size = OB_MAX(iter_param_->eval_ctx_->max_batch_size_, iter_param_->max_batch_size_);
-    if (iter_param_->id_proj_expr_->datum_meta_.type_ == common::ObUInt64Type) {
+    is_uint64_id_ = iter_param_->id_proj_expr_->datum_meta_.type_ == common::ObUInt64Type;
+    is_binary_str_id_ = ob_is_string_tc(iter_param_->id_proj_expr_->datum_meta_.type_)
+        && CS_TYPE_BINARY == iter_param_->id_proj_expr_->datum_meta_.cs_type_;
+    if (is_uint64_id_) {
       set_datum_func_ = ObISparseRetrievalMergeIter::set_datum_int;
     } else {
       set_datum_func_ = ObISparseRetrievalMergeIter::set_datum_shallow;
@@ -232,6 +237,10 @@ int ObSRDaaTIterImpl::get_next_rows(const int64_t capacity, int64_t &count)
   } else {
     count = 0;
     const int64_t real_capacity = MIN(capacity, iter_param_->max_batch_size_);
+    const bool count_only = can_union_merge() && iter_param_->skip_id_projection_;
+    if (can_union_merge()) {
+      ret = union_merge_rows(real_capacity, count);
+    }
     while (OB_SUCC(ret) && count < real_capacity) {
       if (OB_FAIL(do_one_merge_round(count))) {
         if (OB_UNLIKELY(OB_ITER_END != ret)) {
@@ -240,7 +249,7 @@ int ObSRDaaTIterImpl::get_next_rows(const int64_t capacity, int64_t &count)
     }
 
     if (OB_SUCC(ret) || OB_ITER_END == ret) {
-      if (count > 0 && OB_FAIL(project_results(count))) {
+      if (count > 0 && !count_only && OB_FAIL(project_results(count))) {
       }
     }
 
@@ -266,6 +275,94 @@ int ObSRDaaTIterImpl::do_one_merge_round(int64_t &count)
   } else if (need_project && OB_FAIL(filter_on_demand(count, relevance, need_project))) {
   } else if (need_project && OB_FAIL(cache_result(count, *id_datum, relevance))) {
     if (OB_ITER_END != ret) {
+    }
+  }
+  return ret;
+}
+
+inline int ObSRDaaTIterImpl::cmp_union_id(const ObDatum &l, const ObDatum &r, int &cmp_ret) const
+{
+  int ret = OB_SUCCESS;
+  if (is_binary_str_id_ && !l.is_null() && !r.is_null()) {
+    // same as the binary collation compare: bytes first, then length
+    const int32_t min_len = MIN(l.len_, r.len_);
+    cmp_ret = MEMCMP(l.ptr_, r.ptr_, min_len);
+    if (0 == cmp_ret) {
+      cmp_ret = l.len_ < r.len_ ? -1 : (l.len_ > r.len_ ? 1 : 0);
+    }
+  } else {
+    ret = merge_cmp_.cmp_id(l, r, cmp_ret);
+  }
+  return ret;
+}
+
+// Emits the next distinct ids of the posting-list union in id order. Dimensions whose current id was
+// emitted in the previous round are listed in next_round_iter_idxes_ and advanced first; exhausted
+// dimensions get a null current id.
+int ObSRDaaTIterImpl::union_merge_rows(const int64_t capacity, int64_t &count)
+{
+  int ret = OB_SUCCESS;
+  const int64_t dim_cnt = dim_iters_->count();
+  ObISRDaaTDimIter *const *dim_iters = dim_iters_->get_data();
+  const ObDatum **ids = iter_domain_ids_.get_data();
+  int64_t *next_idxes = next_round_iter_idxes_.get_data();
+  while (OB_SUCC(ret) && count < capacity) {
+    for (int64_t i = 0; OB_SUCC(ret) && i < next_round_cnt_; ++i) {
+      const int64_t iter_idx = next_idxes[i];
+      ObISRDaaTDimIter *dim_iter = dim_iters[iter_idx];
+      if (OB_ISNULL(dim_iter)) {
+        ret = OB_ERR_UNEXPECTED;
+      } else if (OB_FAIL(dim_iter->get_next_row())) {
+        if (OB_ITER_END == ret) {
+          ids[iter_idx] = nullptr;
+          ret = OB_SUCCESS;
+        }
+      } else if (OB_FAIL(dim_iter->get_curr_id(ids[iter_idx]))) {
+      }
+    }
+    if (OB_SUCC(ret)) {
+      next_round_cnt_ = 0;
+      const ObDatum *min_id = nullptr;
+      int cmp_ret = 0;
+      if (is_uint64_id_) {
+        uint64_t min_val = 0;
+        for (int64_t i = 0; i < dim_cnt; ++i) {
+          const ObDatum *id = ids[i];
+          if (nullptr == id) {
+          } else if (nullptr == min_id || id->get_uint64() < min_val) {
+            min_id = id;
+            min_val = id->get_uint64();
+            next_idxes[0] = i;
+            next_round_cnt_ = 1;
+          } else if (id->get_uint64() == min_val) {
+            next_idxes[next_round_cnt_++] = i;
+          }
+        }
+      } else {
+        for (int64_t i = 0; OB_SUCC(ret) && i < dim_cnt; ++i) {
+          const ObDatum *id = ids[i];
+          if (nullptr == id) {
+          } else if (nullptr == min_id) {
+            min_id = id;
+            next_idxes[0] = i;
+            next_round_cnt_ = 1;
+          } else if (OB_FAIL(cmp_union_id(*id, *min_id, cmp_ret))) {
+          } else if (cmp_ret < 0) {
+            min_id = id;
+            next_idxes[0] = i;
+            next_round_cnt_ = 1;
+          } else if (0 == cmp_ret) {
+            next_idxes[next_round_cnt_++] = i;
+          }
+        }
+      }
+      if (OB_FAIL(ret)) {
+      } else if (nullptr == min_id) {
+        ret = OB_ITER_END;
+      } else if (iter_param_->skip_id_projection_) {
+        ret = count_result(count);
+      } else if (OB_FAIL(cache_result(count, *min_id, 0.0))) {
+      }
     }
   }
   return ret;
@@ -401,6 +498,23 @@ int ObSRDaaTIterImpl::cache_result(int64_t &count, const ObDatum &id_datum, cons
     ++count;
     ++output_row_cnt_;
     if (limit_param->is_valid() && output_row_cnt_ >= limit) {
+      ret = OB_ITER_END;
+    }
+  }
+  return ret;
+}
+
+// cache_result() without buffering the id: limit/offset bookkeeping only
+int ObSRDaaTIterImpl::count_result(int64_t &count)
+{
+  int ret = OB_SUCCESS;
+  const common::ObLimitParam *limit_param = iter_param_->limit_param_;
+  ++input_row_cnt_;
+  if (limit_param->is_valid() && input_row_cnt_ <= limit_param->offset_) {
+  } else {
+    ++count;
+    ++output_row_cnt_;
+    if (limit_param->is_valid() && output_row_cnt_ >= limit_param->limit_) {
       ret = OB_ITER_END;
     }
   }

@@ -105,7 +105,7 @@ int ObDASLegacyTRMergeIter::init_das_iter_scan_params()
 {
   int ret = OB_SUCCESS;
   const int64_t dim_iter_cnt = taat_mode_ ? 1 : query_tokens_.count();
-  if (!ir_ctdef_->need_estimate_total_doc_cnt() && 0 != dim_iter_cnt) {
+  if (need_total_doc_cnt_scan() && 0 != dim_iter_cnt) {
     void *buf = nullptr;
     if (OB_ISNULL(buf = myself_allocator_.alloc(sizeof(ObTableScanParam)))) {
       ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -130,7 +130,7 @@ int ObDASLegacyTRMergeIter::init_das_iter_scan_params()
     } else if (OB_FAIL(inv_scan_params_.prepare_allocate(dim_iter_cnt))) {
     }
 
-    if (OB_FAIL(ret) || !ir_ctdef_->need_inv_idx_agg()) {
+    if (OB_FAIL(ret) || !need_inv_idx_agg()) {
     } else if (FALSE_IT(inv_agg_params_.set_allocator(&myself_allocator_))) {
     } else if (OB_FAIL(inv_agg_params_.init(dim_iter_cnt))) {
     } else if (OB_FAIL(inv_agg_params_.prepare_allocate(dim_iter_cnt))) {
@@ -155,7 +155,7 @@ int ObDASLegacyTRMergeIter::init_das_iter_scan_params()
         }
       }
 
-      if (OB_SUCC(ret) && ir_ctdef_->need_inv_idx_agg()) {
+      if (OB_SUCC(ret) && need_inv_idx_agg()) {
         void *agg_buf = nullptr;
         if (OB_ISNULL(agg_buf = myself_allocator_.alloc(sizeof(ObTableScanParam) * dim_iter_cnt))) {
           ret = OB_ALLOCATE_MEMORY_FAILED;
@@ -349,7 +349,7 @@ int ObDASLegacyTRMergeIter::init_dim_iter_param(ObTextRetrievalScanIterParam &it
     const int64_t dim_iter_cnt = taat_mode_ ? 1 : query_tokens_.count();
     iter_param.inv_idx_scan_param_ = inv_scan_params_[idx];
     iter_param.inv_idx_scan_iter_ = static_cast<ObDASScanIter*>(children_[idx]);
-    if (ir_ctdef_->need_inv_idx_agg()) {
+    if (need_inv_idx_agg()) {
       iter_param.inv_idx_agg_param_ = inv_agg_params_[idx];
       iter_param.inv_idx_agg_iter_ = static_cast<ObDASScanIter*>(children_[idx + dim_iter_cnt]);
       if (OB_UNLIKELY(1 != ir_ctdef_->get_inv_idx_agg_ctdef()
@@ -363,7 +363,7 @@ int ObDASLegacyTRMergeIter::init_dim_iter_param(ObTextRetrievalScanIterParam &it
     iter_param.allocator_ = &myself_allocator_;
     iter_param.mem_context_ = mem_context_;
     iter_param.eval_ctx_ = ir_rtdef_->eval_ctx_;
-    iter_param.relevance_expr_ = ir_ctdef_->relevance_expr_;
+    iter_param.relevance_expr_ = skip_relevance_ ? nullptr : ir_ctdef_->relevance_expr_;
     iter_param.inv_scan_doc_length_col_ = ir_ctdef_->inv_scan_doc_length_col_;
     iter_param.inv_scan_domain_id_col_ = ir_ctdef_->inv_scan_domain_id_col_;
     iter_param.inv_idx_agg_cache_mode_ = function_lookup_mode_ && !taat_mode_;
@@ -378,9 +378,10 @@ int ObDASLegacyTRMergeIter::create_sparse_retrieval_iter()
   sr_iter_param_.limit_param_ = &ir_rtdef_->get_inv_idx_scan_rtdef()->limit_param_;
   sr_iter_param_.eval_ctx_ = ir_rtdef_->eval_ctx_;
   sr_iter_param_.id_proj_expr_ = ir_ctdef_->inv_scan_domain_id_col_;
-  sr_iter_param_.relevance_expr_ = ir_ctdef_->relevance_expr_;
+  sr_iter_param_.relevance_expr_ = skip_relevance_ ? nullptr : ir_ctdef_->relevance_expr_;
   sr_iter_param_.relevance_proj_expr_ = ir_ctdef_->relevance_proj_col_;
-  sr_iter_param_.filter_expr_ = ir_ctdef_->match_filter_;
+  sr_iter_param_.filter_expr_ = skip_relevance_ ? nullptr : ir_ctdef_->match_filter_;
+  sr_iter_param_.skip_id_projection_ = skip_id_projection_;
   sr_iter_param_.topk_limit_ = topk_limit_;
   if (OB_NOT_NULL(ir_ctdef_->field_boost_expr_)) {
     ObDatum *boost_datum = nullptr;
@@ -480,12 +481,12 @@ int ObDASLegacyTRMergeIter::init_daat_iter_param(ObTextDaaTParam &iter_param)
   iter_param.bm25_param_est_ctx_.can_est_by_sum_skip_index_ = ir_ctdef_->avg_doc_len_est_spec_.can_est_by_sum_skip_index_;
   iter_param.bm25_param_est_ctx_.avg_doc_token_cnt_expr_ = ir_ctdef_->avg_doc_token_cnt_expr_;
   iter_param.bm25_param_est_ctx_.doc_length_est_param_ = &doc_length_est_param_;
-  if (query_tokens_.count() == 0) {
+  if (query_tokens_.count() == 0 || skip_relevance_) {
     // do nothing
   } else if (OB_ISNULL(iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(init_doc_length_est_param())) {
-  } else if (!ir_ctdef_->need_estimate_total_doc_cnt()) {
+  } else if (need_total_doc_cnt_scan()) {
     if (OB_UNLIKELY(!static_cast<sql::ObStoragePushdownFlag>(total_doc_cnt_scan_param_->pd_storage_flag_).is_aggregate_pushdown())) {
       ret = OB_NOT_IMPLEMENT;
       LOG_ERROR("aggregate without pushdown not implemented", K(ret));
@@ -536,7 +537,7 @@ int ObDASLegacyTRMergeIter::init_taat_iter_param(ObTextTaaTParam &iter_param)
   } else if (OB_ISNULL(iter_param.bm25_param_est_ctx_.total_doc_cnt_expr_)) {
     ret = OB_ERR_UNEXPECTED;
   } else if (OB_FAIL(init_doc_length_est_param())) {
-  } else if (!ir_ctdef_->need_estimate_total_doc_cnt()) {
+  } else if (need_total_doc_cnt_scan()) {
     if (OB_UNLIKELY(!static_cast<sql::ObStoragePushdownFlag>(total_doc_cnt_scan_param_->pd_storage_flag_).is_aggregate_pushdown())) {
       ret = OB_NOT_IMPLEMENT;
       LOG_ERROR("aggregate without pushdown not implemented", K(ret));
@@ -556,7 +557,7 @@ int ObDASLegacyTRMergeIter::set_children_iter_rangekey()
   } else if (OB_UNLIKELY(0 == query_tokens_.count())) {
     // do nothing
   } else if (OB_UNLIKELY(inv_scan_params_.empty()
-      || (ir_ctdef_->need_inv_idx_agg() && inv_agg_params_.empty()))) {
+      || (need_inv_idx_agg() && inv_agg_params_.empty()))) {
     ret = OB_ERR_UNEXPECTED;
   } else {
     const ExprFixedArray *exprs = &(ir_ctdef_->get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_);
@@ -571,7 +572,7 @@ int ObDASLegacyTRMergeIter::set_children_iter_rangekey()
     const int64_t dim_iter_cnt = taat_mode_ ? 1 : query_tokens_.count();
     for (int64_t i = 0; OB_SUCC(ret) && i < dim_iter_cnt; ++i) {
       if (OB_FAIL(gen_inv_idx_scan_default_range(query_tokens_[i], inv_idx_scan_range))) {
-      } else if (ir_ctdef_->need_inv_idx_agg()
+      } else if (need_inv_idx_agg()
           && OB_FAIL(inv_agg_params_[i]->key_ranges_.push_back(inv_idx_scan_range))) {
       } else if (FALSE_IT(inv_idx_scan_range.group_idx_ = group_idx)) {
       } else if (OB_FAIL(inv_scan_params_[i]->key_ranges_.push_back(inv_idx_scan_range))) {
@@ -597,7 +598,7 @@ int ObDASLegacyTRMergeIter::set_children_iter_rangekey(const common::ObIArray<st
   }
   if (OB_FAIL(ret) || 0 == query_tokens_.count()) {
   } else if (OB_UNLIKELY(inv_scan_params_.empty()
-      || (ir_ctdef_->need_inv_idx_agg() && inv_agg_params_.empty()))) {
+      || (need_inv_idx_agg() && inv_agg_params_.empty()))) {
     ret = OB_ERR_UNEXPECTED;
   } else {
     const ExprFixedArray *exprs = &(ir_ctdef_->get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_);
@@ -620,7 +621,7 @@ int ObDASLegacyTRMergeIter::set_children_iter_rangekey(const common::ObIArray<st
         }
       }
 
-      if (!ir_ctdef_->need_inv_idx_agg()) {
+      if (!need_inv_idx_agg()) {
       } else if (OB_FAIL(gen_inv_idx_scan_default_range(query_tokens_[i], inv_idx_scan_range))) {
       } else if (OB_FAIL(inv_agg_params_[i]->key_ranges_.push_back(inv_idx_scan_range))) {
       }

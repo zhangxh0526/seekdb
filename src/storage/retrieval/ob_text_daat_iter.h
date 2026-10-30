@@ -63,6 +63,12 @@ public:
   virtual void reset() override;
 protected:
   virtual int pre_process() override;
+  virtual bool can_union_merge() const override
+  {
+    return nullptr == iter_param_->relevance_expr_ && !iter_param_->need_filter()
+        && !iter_param_->need_pushdown_topk() && sql::NATURAL_LANGUAGE_MODE == mode_flag_
+        && relevance_collector_->accept_single_dim_match();
+  }
 protected:
   ObBM25ParamEstimator bm25_param_estimator_;
   sql::ObMatchAgainstMode mode_flag_;

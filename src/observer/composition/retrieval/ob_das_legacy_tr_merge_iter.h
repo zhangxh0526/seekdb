@@ -108,6 +108,9 @@ private:
   int init_topk_limit();
   int init_block_max_iter_param();
   int init_doc_length_est_param();
+  // relevance is skipped when the match filter is implied by the posting-list union (see match_filter_implied_)
+  bool need_inv_idx_agg() const { return !skip_relevance_ && ir_ctdef_->need_inv_idx_agg(); }
+  bool need_total_doc_cnt_scan() const { return !skip_relevance_ && !ir_ctdef_->need_estimate_total_doc_cnt(); }
 private:
   static const int64_t INV_IDX_ROWKEY_COL_CNT = 2;
 private:
@@ -142,7 +145,9 @@ private:
       uint32_t topk_mode_             : 1;
       uint32_t daat_mode_             : 1;
       uint32_t taat_mode_             : 1;
-      uint32_t reserve                : 28;
+      uint32_t skip_relevance_        : 1;
+      uint32_t skip_id_projection_    : 1;
+      uint32_t reserve                : 26;
     };
     uint32_t flags_;
   };

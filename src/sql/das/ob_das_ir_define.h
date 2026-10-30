@@ -149,6 +149,8 @@ public:
     return has_block_max_scan_ ? (1 + has_inv_agg_ + has_doc_id_agg_) : -1;
   }
   bool need_estimate_total_doc_cnt() const { return 0 != estimated_total_doc_cnt_; }
+  bool can_skip_relevance() const { return match_filter_implied_ && need_calc_relevance() && !has_pushdown_topk(); }
+  bool can_skip_id_projection() const { return can_skip_relevance() && domain_id_unused_; }
 
   INHERIT_TO_STRING_KV("ObDASBaseCtDef", ObDASBaseCtDef,
                        K_(flags),
@@ -191,7 +193,13 @@ public:
       uint8_t reserved_ir_scan_flag_:1;
       uint8_t has_block_max_scan_:1;
       uint8_t has_avg_doc_len_est_:1;
-      uint8_t reserved_:3;
+      // every doc in the posting-list union satisfies match_filter_ and no operator consumes the score,
+      // so DaaT retrieval may skip relevance evaluation and the match filter entirely
+      uint8_t match_filter_implied_:1;
+      // with match_filter_implied_: nothing above the scan reads the doc ids either (no output columns,
+      // no index back), so retrieval only has to count the docs of the posting-list union
+      uint8_t domain_id_unused_:1;
+      uint8_t reserved_:1;
     };
   };
   ObExpr *field_boost_expr_;

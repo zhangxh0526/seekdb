@@ -45,6 +45,10 @@ struct ObSRMergeCmp
 
   int init(sql::ObDatumMeta id_meta, const ObFixedArray<const ObDatum *, ObIAllocator> *iter_ids);
   int cmp(const ObSRMergeItem &l, const ObSRMergeItem &r, int64_t &cmp_ret);
+  inline int cmp_id(const ObDatum &l, const ObDatum &r, int &cmp_ret) const
+  {
+    return cmp_func_(l, r, cmp_ret, nullptr);
+  }
 private:
   inline const ObDatum &get_id_datum(const int64_t iter_idx)
   {
@@ -92,6 +96,12 @@ protected:
   virtual int filter_on_demand(const int64_t count, const double relevance, bool &need_project);
   virtual int cache_result(int64_t &count, const ObDatum &id_datum, const double relevance);
   virtual int project_results(const int64_t count);
+  // Plain union of the posting lists: valid when neither score nor filter is required
+  // and any single matched dimension makes a doc valid.
+  virtual bool can_union_merge() const { return false; }
+  int count_result(int64_t &count);
+  int union_merge_rows(const int64_t capacity, int64_t &count);
+  inline int cmp_union_id(const ObDatum &l, const ObDatum &r, int &cmp_ret) const;
   int init_merge_heap(const int64_t count);
 protected:
   ObIAllocator *iter_allocator_;
@@ -106,6 +116,8 @@ protected:
   ObFixedArray<int64_t, ObIAllocator> next_round_iter_idxes_;
   int64_t next_round_cnt_;
   void (*set_datum_func_)(ObDatum &, const ObDocIdExt &);
+  bool is_uint64_id_;
+  bool is_binary_str_id_; // ids compare as plain bytes (binary collation string)
 private:
   DISALLOW_COPY_AND_ASSIGN(ObSRDaaTIterImpl);
 };
