@@ -98,10 +98,11 @@ private:
                                      MultimodeAlloctor &mm_alloc,
                                      TokenizeParam &param);
 
+  // result is the JSON binary of the tokenize() result
   static int tokenize_fulltext(const TokenizeParam &param,
                                TokenizeParam::OUTPUT_MODE mode,
                                common::ObIAllocator &allocator,
-                               ObIJsonBase *&result);
+                               ObString &result);
 
   static int construct_ft_parser_inner_name(const ObString &input_str, TokenizeParam &param);
 
