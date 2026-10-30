@@ -10,6 +10,8 @@
 #endif
 #include <stdio.h>
 #include <stdlib.h>
+#include <pthread.h>
+#include <dlfcn.h>
 
 typedef struct {
   cuvsResources_t        res;
@@ -17,6 +19,8 @@ typedef struct {
   cuvsCagraIndex_t       idx;
   long n, dim;
 } sk_cuvs_index;
+
+static pthread_mutex_t sk_cuvs_build_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void* seekdb_cuvs_build(const float* base, long n, long dim)
 {
@@ -37,7 +41,20 @@ void* seekdb_cuvs_build(const float* base, long n, long dim)
   h->ip->intermediate_graph_degree = 256;
   h->ip->nn_descent_niter = 100;
   if (cuvsCagraIndexCreate(&h->idx)      != CUVS_SUCCESS) goto fail_ip;
-  if (cuvsCagraBuild(h->res, h->ip, &dset, h->idx) != CUVS_SUCCESS) goto fail_idx;
+  {
+    /* The frozen library uses OpenBLAS for host work. Its default 64-worker
+       team oversubscribes the CPU quota. Serialize temporary process-wide
+       tuning and restore the caller's setting on both success and failure. */
+    int (*get_threads)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "openblas_get_num_threads");
+    void (*set_threads)(int) = (void (*)(int))dlsym(RTLD_DEFAULT, "openblas_set_num_threads");
+    if (pthread_mutex_lock(&sk_cuvs_build_mutex) != 0) goto fail_idx;
+    int threads = get_threads ? get_threads() : 0;
+    if (threads > 8 && set_threads) set_threads(8);
+    int status = cuvsCagraBuild(h->res, h->ip, &dset, h->idx);
+    if (threads > 8 && set_threads) set_threads(threads);
+    pthread_mutex_unlock(&sk_cuvs_build_mutex);
+    if (status != CUVS_SUCCESS) goto fail_idx;
+  }
   h->n = n; h->dim = dim;
   return h;
 

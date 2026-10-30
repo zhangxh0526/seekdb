@@ -54,7 +54,12 @@ Thread::Thread(Threads *threads, int64_t idx, int64_t stack_size)
       threads_(threads),
       idx_(idx),
       stack_addr_(nullptr),
+#if defined(OB_BUILD_CUVS) && defined(__linux__)
+      // GPU tooling adds static TLS even to pools that request small pthread stacks.
+      stack_size_(stack_size > 0 && stack_size < (1L << 20) ? (1L << 20) : stack_size),
+#else
       stack_size_(stack_size),
+#endif
       stop_(true),
       join_concurrency_(0),
       pid_before_stop_(0),
