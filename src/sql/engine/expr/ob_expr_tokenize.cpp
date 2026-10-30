@@ -41,56 +41,50 @@ namespace sql
 {
 namespace
 {
-// Without a properties argument, the inner parser name and the reformed properties only depend on the
-// parser name argument, and a loaded dictionary stays loaded. Every thread remembers its last
-// resolution so that repeated calls skip parsing, rebuilding and serializing the properties.
+// Without a properties argument, the parser and its properties only depend on the parser name argument,
+// and a loaded dictionary stays loaded. Every thread remembers its last resolution so that repeated calls
+// skip building, serializing and parsing back the properties.
 class ObTokenizeParserCache final
 {
 public:
   bool get(const ObString &raw_parser_name,
            const ObCharsetType charset,
-           ObIAllocator &allocator,
-           ObString &parser_name,
-           ObString &properties) const
+           storage::ObFTParser &parser,
+           storage::ObFTParserProperty &property) const
   {
     bool hit = false;
     if (valid_ && charset == charset_
         && 0 == raw_parser_name.compare(ObString(raw_name_len_, raw_name_))) {
-      // copied out: the strings must not change if a nested call refills the cache
-      hit = OB_SUCCESS == ob_write_string(allocator, ObString(parser_name_len_, parser_name_), parser_name)
-            && OB_SUCCESS == ob_write_string(allocator, ObString(props_len_, props_), properties);
+      // copied out: the values must not change if a nested call refills the cache
+      parser = parser_;
+      property = property_;
+      hit = true;
     }
     return hit;
   }
   void put(const ObString &raw_parser_name,
            const ObCharsetType charset,
-           const ObString &parser_name,
-           const ObString &properties)
+           const storage::ObFTParser &parser,
+           const storage::ObFTParserProperty &property)
   {
-    valid_ = raw_parser_name.length() <= MAX_NAME_LEN
-             && parser_name.length() <= MAX_NAME_LEN
-             && properties.length() <= MAX_PROPS_LEN;
+    valid_ = raw_parser_name.length() <= MAX_NAME_LEN;
     if (valid_) {
       charset_ = charset;
       raw_name_len_ = raw_parser_name.length();
-      parser_name_len_ = parser_name.length();
-      props_len_ = properties.length();
       MEMCPY(raw_name_, raw_parser_name.ptr(), raw_name_len_);
-      MEMCPY(parser_name_, parser_name.ptr(), parser_name_len_);
-      MEMCPY(props_, properties.ptr(), props_len_);
+      parser_ = parser;
+      property_ = property;
     }
   }
 private:
   static const int64_t MAX_NAME_LEN = storage::OB_FT_PARSER_NAME_LENGTH;
-  static const int64_t MAX_PROPS_LEN = 512;
-  bool valid_;
-  ObCharsetType charset_;
-  int32_t raw_name_len_;
-  int32_t parser_name_len_;
-  int32_t props_len_;
+  bool valid_ = false;
+  ObCharsetType charset_ = CHARSET_INVALID;
+  int32_t raw_name_len_ = 0;
   char raw_name_[MAX_NAME_LEN];
-  char parser_name_[MAX_NAME_LEN];
-  char props_[MAX_PROPS_LEN];
+  // the property only refers to static strings, so it can outlive the call that parsed it
+  storage::ObFTParser parser_;
+  storage::ObFTParserProperty property_;
 };
 
 thread_local ObTokenizeParserCache tokenize_parser_cache;
@@ -165,7 +159,10 @@ int ObExprTokenize::tokenize_fulltext(const TokenizeParam &param,
 
   if (TokenizeParam::OUTPUT_MODE::DEFAULT != mode && TokenizeParam::OUTPUT_MODE::ALL != mode) {
     ret = OB_INVALID_ARGUMENT;
-  } else if (OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.properties_))) {
+  } else if (param.is_parser_parsed_
+             && OB_FAIL(tokenize_helper.init(&allocator, param.parser_, param.parser_property_))) {
+  } else if (!param.is_parser_parsed_
+             && OB_FAIL(tokenize_helper.init(&allocator, param.parser_name_, param.properties_))) {
   } else if (OB_FAIL(token_map.create(ft_word_bkt_cnt, common::ObMemAttr("FTWordMap")))) {
   } else if (
       (0 != param.fulltext_.length())
@@ -203,7 +200,10 @@ ObExprTokenize::TokenizeParam ::TokenizeParam()
     parser_name_(ObString(OB_DEFAULT_FULLTEXT_PARSER_NAME)),
     meta_(),
     fulltext_(),
-    output_mode_(OUTPUT_MODE::DEFAULT)
+    output_mode_(OUTPUT_MODE::DEFAULT),
+    is_parser_parsed_(false),
+    parser_(),
+    parser_property_()
 {
 }
 
@@ -289,12 +289,16 @@ int ObExprTokenize::parse_param(const ObExpr &expr,
     const ObCharsetType charset = ObCharset::charset_type_by_coll(param.meta_.get_collation_type());
     ObString raw_parser_name;
     if (OB_FAIL(eval_raw_parser_name(expr, ctx, raw_parser_name))) {
-    } else if (tokenize_parser_cache.get(raw_parser_name, charset, allocator, param.parser_name_, param.properties_)) {
+    } else if (tokenize_parser_cache.get(raw_parser_name, charset, param.parser_, param.parser_property_)) {
+      param.is_parser_parsed_ = true;
     } else if (OB_FAIL(construct_ft_parser_inner_name(raw_parser_name, param))) {
     } else if (OB_FAIL(param.reform_parser_properties(param.properties_))) {
     } else if (OB_FAIL(param.try_load_dictionary_for_ik())) {
+    } else if (OB_FAIL(param.parser_.parse_from_str(param.parser_name_.ptr(), param.parser_name_.length()))) {
+    } else if (OB_FAIL(param.parser_property_.parse_for_parser_helper(param.parser_, param.properties_))) {
     } else {
-      tokenize_parser_cache.put(raw_parser_name, charset, param.parser_name_, param.properties_);
+      param.is_parser_parsed_ = true;
+      tokenize_parser_cache.put(raw_parser_name, charset, param.parser_, param.parser_property_);
     }
   } else if (OB_FAIL(parse_parser_name(expr, ctx, param))) {
   } else if (OB_FAIL(parse_parser_properties(expr, ctx, temp_allocator, param))) {
