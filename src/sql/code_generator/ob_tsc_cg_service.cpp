@@ -629,7 +629,10 @@ int ObTscCgService::extract_fts_das_access_exprs(const ObLogTableScan &op,
   } else if (!cg_ctx.is_func_lookup_ && !cg_ctx.is_merge_fts_index_ &&
              (op.is_text_retrieval_scan() || cg_ctx.is_es_match_) &&
              is_text_retrieval_aux_type){
-    if (op.is_text_retrieval_scan() && OB_FAIL(extract_text_ir_access_columns(op, op.get_text_retrieval_info(), scan_ctdef, access_exprs))) {
+    bool id_only = false;
+    if (op.is_text_retrieval_scan() && ObTSCIRScanType::OB_IR_INV_IDX_SCAN == scan_ctdef.ir_scan_type_
+        && OB_FAIL(check_match_filter_implied(op, cg_ctx, op.get_text_retrieval_info(), id_only))) {
+    } else if (op.is_text_retrieval_scan() && OB_FAIL(extract_text_ir_access_columns(op, op.get_text_retrieval_info(), scan_ctdef, access_exprs, id_only))) {
     } else if (cg_ctx.is_es_match_ && OB_FAIL(extract_text_ir_access_columns(op, op.get_match_tr_infos().at(cg_ctx.curr_match_idx_), scan_ctdef, access_exprs))) {
     }
   } else if (is_doc_id_index_back) {
@@ -1160,7 +1163,10 @@ int ObTscCgService::extract_das_output_column_ids(const ObLogTableScan &op,
                                          : cg_ctx.is_func_lookup_ ? op.get_lookup_tr_infos().at(cg_ctx.curr_func_lookup_idx_)
                                          : cg_ctx.is_es_match_ ? op.get_match_tr_infos().at(cg_ctx.curr_match_idx_)
                                          : op.get_text_retrieval_info();
-    if (OB_FAIL(extract_text_ir_das_output_column_ids(tr_info, scan_ctdef, output_cids))) {
+    bool id_only = false;
+    if (ObTSCIRScanType::OB_IR_INV_IDX_SCAN == scan_ctdef.ir_scan_type_
+        && OB_FAIL(check_match_filter_implied(op, cg_ctx, tr_info, id_only))) {
+    } else if (OB_FAIL(extract_text_ir_das_output_column_ids(tr_info, scan_ctdef, output_cids, id_only))) {
     }
   } else if (cg_ctx.is_func_lookup_ && table_id == op.get_rowkey_doc_table_id()) {
     const bool output_rowkey = !cg_ctx.is_func_lookup_;
@@ -1895,11 +1901,9 @@ int ObTscCgService::generate_text_ir_ctdef(const ObLogTableScan &op,
   if (OB_SUCC(ret)) {
     root_ctdef = ir_scan_ctdef;
     bool match_filter_implied = false;
-    if (OB_FAIL(generate_text_ir_spec_exprs(tr_info, *ir_scan_ctdef))) {
-    } else if (!cg_ctx.is_func_lookup_ && !cg_ctx.is_es_match_ && !cg_ctx.is_merge_fts_index_
-        && !cg_ctx.is_vec_iter_func_lookup_
-        && OB_FAIL(check_match_filter_implied(op, tr_info, match_filter_implied))) {
+    if (OB_FAIL(check_match_filter_implied(op, cg_ctx, tr_info, match_filter_implied))) {
       LOG_WARN("failed to check whether match filter is implied", K(ret));
+    } else if (OB_FAIL(generate_text_ir_spec_exprs(tr_info, match_filter_implied, *ir_scan_ctdef))) {
     } else {
       ir_scan_ctdef->match_filter_implied_ = match_filter_implied;
       ir_scan_ctdef->domain_id_unused_ = match_filter_implied && is_scan_output_id_free(op);
@@ -2324,7 +2328,8 @@ int ObTscCgService::extract_text_ir_access_columns(
     const ObLogTableScan &op,
     const ObTextRetrievalInfo &tr_info,
     const ObDASScanCtDef &scan_ctdef,
-    ObIArray<ObRawExpr*> &access_exprs)
+    ObIArray<ObRawExpr*> &access_exprs,
+    const bool id_only)
 {
   int ret = OB_SUCCESS;
   if (OB_UNLIKELY(op.need_skip_rowkey_doc() &&
@@ -2335,7 +2340,10 @@ int ObTscCgService::extract_text_ir_access_columns(
   } else {
     switch (scan_ctdef.ir_scan_type_) {
     case ObTSCIRScanType::OB_IR_INV_IDX_SCAN:
-      if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.token_cnt_column_)))) {
+      if (id_only) {
+        if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.docid_or_rowkey_column_)))) {
+        }
+      } else if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.token_cnt_column_)))) {
       } else if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.docid_or_rowkey_column_)))) {
       } else if (OB_FAIL(add_var_to_array_no_dup(access_exprs, static_cast<ObRawExpr*>(tr_info.doc_length_column_)))) {
       }
@@ -2690,10 +2698,15 @@ int ObTscCgService::extract_vector_das_output_column_ids(const ObTableSchema &in
 int ObTscCgService::extract_text_ir_das_output_column_ids(
     const ObTextRetrievalInfo &tr_info,
     const ObDASScanCtDef &scan_ctdef,
-    ObIArray<uint64_t> &output_cids)
+    ObIArray<uint64_t> &output_cids,
+    const bool id_only)
 {
   int ret = OB_SUCCESS;
-  if (ObTSCIRScanType::OB_IR_INV_IDX_SCAN == scan_ctdef.ir_scan_type_) {
+  if (ObTSCIRScanType::OB_IR_INV_IDX_SCAN == scan_ctdef.ir_scan_type_ && id_only) {
+    if (OB_FAIL(output_cids.push_back(
+        static_cast<ObColumnRefRawExpr *>(tr_info.docid_or_rowkey_column_)->get_column_id()))) {
+    }
+  } else if (ObTSCIRScanType::OB_IR_INV_IDX_SCAN == scan_ctdef.ir_scan_type_) {
     if (OB_FAIL(output_cids.push_back(
         static_cast<ObColumnRefRawExpr *>(tr_info.token_cnt_column_)->get_column_id()))) {
     } else if (OB_FAIL(output_cids.push_back(
@@ -3002,6 +3015,7 @@ int ObTscCgService::generate_spiv_block_max_spec(
 }
 
 int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_info,
+                                                const bool inv_scan_id_only,
                                                 ObDASIRScanCtDef &text_ir_scan_ctdef)
 {
   int ret = OB_SUCCESS;
@@ -3026,12 +3040,13 @@ int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_in
         doc_length_col_idx = i;
       }
     }
-    if (OB_UNLIKELY(-1 == doc_id_col_idx || -1 == doc_length_col_idx)) {
+    if (OB_UNLIKELY(-1 == doc_id_col_idx || (-1 == doc_length_col_idx) != inv_scan_id_only)) {
       ret = OB_ERR_UNEXPECTED;
     } else {
       text_ir_scan_ctdef.inv_scan_domain_id_col_ =
           text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_id_col_idx);
-      text_ir_scan_ctdef.inv_scan_doc_length_col_ =
+      // an id-only inverted index scan never computes relevance, which is the only reader of doc lengths
+      text_ir_scan_ctdef.inv_scan_doc_length_col_ = inv_scan_id_only ? nullptr :
           text_ir_scan_ctdef.get_inv_idx_scan_ctdef()->pd_expr_spec_.access_exprs_.at(doc_length_col_idx);
       if (OB_FAIL(result_output.push_back(text_ir_scan_ctdef.inv_scan_domain_id_col_))) {
       }
@@ -3058,6 +3073,8 @@ int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_in
     } else if (OB_FAIL(cg_.generate_rt_expr(*tr_info.relevance_expr_, text_ir_scan_ctdef.relevance_expr_))) {
     } else if (OB_ISNULL(tr_info.avg_doc_token_cnt_)) {
       ret = OB_ERR_UNEXPECTED;
+    } else if (inv_scan_id_only) {
+      // relevance is skipped, so is the doc length estimation that reads token counts of the scan
     } else if (OB_FAIL(generate_text_avg_doc_len_est_ctdef(tr_info, text_ir_scan_ctdef))) {
     } else {
       text_ir_scan_ctdef.has_avg_doc_len_est_ = true;
@@ -3090,8 +3107,10 @@ int ObTscCgService::generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_in
 
 // In natural language mode, BM25 relevance is strictly positive for every doc that contains at least one
 // query token, so a bare MATCH predicate (or BOOL(MATCH)) holds for exactly the docs of the posting-list
-// union. When nothing above the scan consumes the score, retrieval can skip scoring altogether.
+// union. When nothing above the scan consumes the score, retrieval can skip scoring altogether, and the
+// inverted index scan only has to read doc ids (token counts and doc lengths only feed the score).
 int ObTscCgService::check_match_filter_implied(const ObLogTableScan &op,
+                                               const DASScanCGCtx &cg_ctx,
                                                const ObTextRetrievalInfo &tr_info,
                                                bool &is_implied) const
 {
@@ -3099,7 +3118,9 @@ int ObTscCgService::check_match_filter_implied(const ObLogTableScan &op,
   is_implied = false;
   const ObRawExpr *filter = tr_info.pushdown_match_filter_;
   const ObMatchFunRawExpr *match_expr = tr_info.match_expr_;
-  if (OB_ISNULL(filter) || OB_ISNULL(match_expr)) {
+  if (cg_ctx.is_func_lookup_ || cg_ctx.is_es_match_ || cg_ctx.is_merge_fts_index_
+      || cg_ctx.is_vec_iter_func_lookup_) {
+  } else if (OB_ISNULL(filter) || OB_ISNULL(match_expr)) {
   } else if (!tr_info.need_calc_relevance_ || tr_info.need_sort() || nullptr != tr_info.topk_limit_expr_
       || nullptr != tr_info.topk_offset_expr_) {
   } else if (match_expr->is_es_match() || NATURAL_LANGUAGE_MODE != match_expr->get_mode_flag()

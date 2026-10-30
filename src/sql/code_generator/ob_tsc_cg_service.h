@@ -191,10 +191,12 @@ private:
   int extract_text_ir_access_columns(const ObLogTableScan &op,
                                      const ObTextRetrievalInfo &tr_info,
                                      const ObDASScanCtDef &scan_ctdef,
-                                     ObIArray<ObRawExpr*> &access_exprs);
+                                     ObIArray<ObRawExpr*> &access_exprs,
+                                     const bool id_only = false);
   int extract_text_ir_das_output_column_ids(const ObTextRetrievalInfo &tr_info,
                                             const ObDASScanCtDef &scan_ctdef,
-                                            ObIArray<uint64_t> &output_cids);
+                                            ObIArray<uint64_t> &output_cids,
+                                            const bool id_only = false);
   int extract_rowkey_doc_access_columns(const ObLogTableScan &op,
                                         const ObDASScanCtDef &scan_ctdef,
                                         ObIArray<ObRawExpr*> &access_exprs,
@@ -208,10 +210,12 @@ private:
                                            const ObLogTableScan &op,
                                            ObDASScanCtDef &scan_ctdef);
   int generate_text_ir_spec_exprs(const ObTextRetrievalInfo &tr_info,
+                                  const bool inv_scan_id_only,
                                   ObDASIRScanCtDef &text_ir_scan_ctdef);
   int check_skip_index_validity(const ObTextRetrievalInfo &tr_info, bool &is_valid) const;
   bool is_scan_output_id_free(const ObLogTableScan &op) const;
   int check_match_filter_implied(const ObLogTableScan &op,
+                                 const DASScanCGCtx &cg_ctx,
                                  const ObTextRetrievalInfo &tr_info,
                                  bool &is_implied) const;
   int generate_text_block_max_scan_ctdef(const ObTextRetrievalInfo &tr_info,

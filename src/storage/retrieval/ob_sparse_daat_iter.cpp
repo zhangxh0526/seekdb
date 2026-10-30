@@ -284,9 +284,29 @@ inline int ObSRDaaTIterImpl::cmp_union_id(const ObDatum &l, const ObDatum &r, in
 {
   int ret = OB_SUCCESS;
   if (is_binary_str_id_ && !l.is_null() && !r.is_null()) {
-    // same as the binary collation compare: bytes first, then length
+    // same as the binary collation compare: bytes first, then length. Ids are short (doc ids are 16
+    // bytes), so compare big-endian words inline instead of calling memcmp.
     const int32_t min_len = MIN(l.len_, r.len_);
-    cmp_ret = MEMCMP(l.ptr_, r.ptr_, min_len);
+    const unsigned char *lp = reinterpret_cast<const unsigned char *>(l.ptr_);
+    const unsigned char *rp = reinterpret_cast<const unsigned char *>(r.ptr_);
+    int32_t i = 0;
+    cmp_ret = 0;
+    for (; 0 == cmp_ret && i + static_cast<int32_t>(sizeof(uint64_t)) <= min_len; i += sizeof(uint64_t)) {
+      uint64_t lw = 0;
+      uint64_t rw = 0;
+      MEMCPY(&lw, lp + i, sizeof(uint64_t));
+      MEMCPY(&rw, rp + i, sizeof(uint64_t));
+      if (lw != rw) {
+        lw = __builtin_bswap64(lw);
+        rw = __builtin_bswap64(rw);
+        cmp_ret = lw < rw ? -1 : 1;
+      }
+    }
+    for (; 0 == cmp_ret && i < min_len; ++i) {
+      if (lp[i] != rp[i]) {
+        cmp_ret = lp[i] < rp[i] ? -1 : 1;
+      }
+    }
     if (0 == cmp_ret) {
       cmp_ret = l.len_ < r.len_ ? -1 : (l.len_ > r.len_ ? 1 : 0);
     }
