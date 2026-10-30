@@ -299,13 +299,23 @@ template class ObFTDATReader<void>;
 
 ObArrayHashMap *ObFTDAT::get_map() { return reinterpret_cast<ObArrayHashMap *>(buff); }
 
+// ObFTSingleWord::operator== without the out-of-line call and memcmp: words are one character
+static OB_INLINE bool ft_single_word_equal(const ObFTSingleWord &l, const ObFTSingleWord &r)
+{
+  bool equal = l.word_len == r.word_len;
+  for (int64_t i = 0; equal && i < l.word_len; ++i) {
+    equal = l.word[i] == r.word[i];
+  }
+  return equal;
+}
+
 int ObArrayHashMap::find(const ObFTSingleWord &word, ObFTWordCode &code) const
 {
   int ret = OB_ENTRY_NOT_EXIST;
   uint64_t hash = word.get_word().hash();
   uint64_t index = hash % header_.capacity_;
   while (header_.data[index].used) {
-    if (header_.data[index].word == word) {
+    if (ft_single_word_equal(header_.data[index].word, word)) {
       code = header_.data[index].code;
       ret = OB_SUCCESS;
       break;
