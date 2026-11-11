@@ -396,12 +396,12 @@ impl<'a> Probe<'a> {
         })
     }
 
-    /// Live slots where the predicate holds, in slot order.
-    fn select(&self, live: &[bool]) -> Vec<u32> {
+    /// Live slots of `slots` where the predicate holds, in slot order.
+    fn select(&self, live: &[bool], slots: Range<usize>) -> Vec<u32> {
         match self {
             // Free slots have NO_CODE, which equals no constant's code.
-            Probe::Code(c, true, v) => (0..c.len()).filter(|&s| c[s] == *v).map(|s| s as u32).collect(),
-            _ => (0..live.len()).filter(|&s| live[s] && self.holds(s)).map(|s| s as u32).collect(),
+            Probe::Code(c, true, v) => slots.filter(|&s| c[s] == *v).map(|s| s as u32).collect(),
+            _ => slots.filter(|&s| live[s] && self.holds(s)).map(|s| s as u32).collect(),
         }
     }
 
@@ -418,9 +418,9 @@ impl<'a> Probe<'a> {
     }
 }
 
-/// Live slots where every probe holds (at least one probe).
-fn select(cache: &RowCache, probes: &[Probe<'_>]) -> Vec<u32> {
-    let mut sel = probes[0].select(&cache.live);
+/// Live slots of `slots` where every probe holds (at least one probe).
+fn select(cache: &RowCache, probes: &[Probe<'_>], slots: Range<usize>) -> Vec<u32> {
+    let mut sel = probes[0].select(&cache.live, slots);
     for p in &probes[1..] {
         sel.retain(|&s| p.holds(s as usize));
     }
@@ -545,6 +545,24 @@ fn scan_live(
     let mut offer = Offer::new(cache, col, codes, top);
     for start in slots.clone().step_by(BLOCK) {
         offer.run(Cand::Live(start..(start + BLOCK).min(slots.end)), top, skip, rest);
+    }
+}
+
+/// Offers the live slots of `slots` where every probe holds to `top`.
+#[allow(clippy::too_many_arguments)]
+fn scan_selected(
+    cache: &RowCache,
+    col: usize,
+    codes: Option<&Sq8>,
+    probes: &[Probe<'_>],
+    slots: Range<usize>,
+    skip: &impl Fn(i64) -> bool,
+    rest: &impl Fn(&RowView<'_>) -> bool,
+    top: &mut TopK<'_>,
+) {
+    let mut offer = Offer::new(cache, col, codes, top);
+    for chunk in select(cache, probes, slots).chunks(BLOCK) {
+        offer.run(Cand::Scattered(chunk), top, skip, rest);
     }
 }
 
@@ -799,10 +817,11 @@ impl Table {
     /// lists are visited by increasing lower bound and the scan stops at the
     /// first one that cannot beat the K-th distance so far; with codes, rows
     /// they prove too far are passed over without reading their floats.
-    /// Without predicates, a table of `helper::min_rows()` rows or more is
-    /// scanned slot by slot in two halves, one on the helper thread, each
-    /// into a TopK of its own. Either way `top` ends up as if every row had
-    /// been offered.
+    /// Otherwise a table of `helper::min_rows()` rows or more is scanned in
+    /// two halves of its slots, one on the helper thread, each into a TopK
+    /// of its own: slot by slot without predicates, through the rows each
+    /// half selects with predicates the cache can probe. Either way `top`
+    /// ends up as if every row had been offered.
     pub fn topk(
         &self,
         preds: &[ColPred<'_>],
@@ -821,10 +840,11 @@ impl Table {
         let mut offer = Offer::new(cache, col, self.codes.as_ref(), top);
         let mut run = |cand: Cand<'_>, top: &mut TopK<'_>| offer.run(cand, top, &skip, &rest);
         let filtered = !preds.is_empty();
-        // Unfiltered scans of a large table are split between two threads,
-        // over the slots rather than the lists, so they take the lists only
-        // while the lists prune.
-        let helper = if filtered || self.rows.len() < self.split_rows { None } else { self.helper };
+        // Scans of a large table are split between two threads, over the
+        // slots rather than the lists, so unfiltered ones take the lists only
+        // while the lists prune (filtered ones already do).
+        let split = if self.rows.len() < self.split_rows { None } else { self.helper };
+        let helper = if filtered { None } else { split };
         let uses = if filtered { Some(&self.filtered_lists) } else { helper.map(|_| &self.unfiltered_lists) };
         let lists = self.index.as_ref().filter(|_| {
             let Some(uses) = uses else {
@@ -862,11 +882,26 @@ impl Table {
             return Ok(());
         }
         match (&probes, helper) {
-            (Some(probes), _) if !probes.is_empty() => {
-                for chunk in select(cache, probes).chunks(BLOCK) {
-                    run(Cand::Scattered(chunk), top);
+            (Some(probes), _) if !probes.is_empty() => match split {
+                Some(h) => {
+                    // Each half selects its own rows, so the probes run on
+                    // both threads too.
+                    let n = cache.live.len();
+                    let codes = self.codes.as_ref();
+                    let mut theirs = TopK::new(top.query(), top.k());
+                    let (skip, rest) = (&skip, &rest);
+                    h.join(
+                        || scan_selected(cache, col, codes, probes, 0..n / 2, skip, rest, top),
+                        || scan_selected(cache, col, codes, probes, n / 2..n, skip, rest, &mut theirs),
+                    );
+                    top.merge(theirs);
                 }
-            }
+                None => {
+                    for chunk in select(cache, probes, 0..cache.live.len()).chunks(BLOCK) {
+                        run(Cand::Scattered(chunk), top);
+                    }
+                }
+            },
             (_, Some(h)) => {
                 // Lower half here, upper half on the helper thread into a
                 // TopK of its own, merged at the end.
@@ -925,7 +960,7 @@ impl Table {
             }
             return Ok(());
         }
-        for s in select(cache, &probes) {
+        for s in select(cache, &probes, 0..cache.live.len()) {
             if !f(cache.view(s as usize))? {
                 break;
             }
@@ -962,7 +997,7 @@ mod tests {
     /// combination of lists and codes (and lists left out above the row
     /// cap), before and after the rows are relaid out, through updates and
     /// deletes, with and without filters (`=`, `<>`, a value no row has, two
-    /// predicates).
+    /// predicates), each query split between two threads and not.
     #[test]
     fn cached_topk_matches_model() {
         for (lists, codes) in [(true, true), (true, false), (false, true), (false, false)] {
@@ -971,11 +1006,12 @@ mod tests {
         check_cached_topk(IndexOptions { min_rows: 1, max_list_rows: 2000, lists: true, codes: true });
     }
 
-    /// An unfiltered TopK over a table large enough to be split between two
-    /// threads returns what offering every row does, through the lists (told
-    /// they prune nothing, or left to measure it) or without them, with codes
-    /// or without (at 96 dimensions their scan stops early for some rows),
-    /// while skipping some rows and testing others.
+    /// A TopK over a table large enough to be split between two threads,
+    /// unfiltered or filtered on the key, returns what offering every row
+    /// does, through the lists (told they prune nothing, or left to measure
+    /// it) or without them, with codes or without (at 96 dimensions their
+    /// scan stops early for some rows), while skipping some rows and testing
+    /// others.
     #[test]
     fn split_topk_matches_model() {
         let configs = [(true, true, true), (true, true, false), (true, false, true), (false, true, false), (false, false, false)];
@@ -1021,17 +1057,30 @@ mod tests {
             if unpruned {
                 table.unfiltered_lists.set(ListUse { visited: 1.0, queries: 0 });
             }
-            for qi in 0..60 {
+            for qi in 0..90 {
                 let q = point();
                 let k = [1, 10, 50][qi % 3];
                 let skip = |pk: i64| pk % 13 == 0;
                 let rest = |row: &RowView<'_>| row.pk % 7 != 3;
+                // Every third query filtered on the key, which the cache
+                // probes: a range, then a range and `<>`.
+                let preds: Vec<ColPred<'_>> = match qi % 6 {
+                    1 => vec![ColPred { col: 0, op: CmpOp::Lt, value: PredValue::Int(4000) }],
+                    4 => vec![
+                        ColPred { col: 0, op: CmpOp::Ge, value: PredValue::Int(1000) },
+                        ColPred { col: 0, op: CmpOp::Ne, value: PredValue::Int(3001) },
+                    ],
+                    _ => Vec::new(),
+                };
                 let mut want = TopK::new(&q, k);
                 for (&pk, v) in model.iter().filter(|(&pk, _)| !skip(pk) && pk % 7 != 3) {
-                    want.offer(pk, v);
+                    let row = [Value::Int(pk), Value::Vector(v.clone())];
+                    if preds.iter().all(|p| p.test(&RowView::new(pk, &row))) {
+                        want.offer(pk, v);
+                    }
                 }
                 let mut got = TopK::new(&q, k);
-                table.topk(&[], skip, rest, &mut got).unwrap();
+                table.topk(&preds, skip, rest, &mut got).unwrap();
                 assert_eq!(got.into_sorted(), want.into_sorted(), "dim {dim} lists {lists} codes {codes} unpruned {unpruned} query {qi}");
             }
         }
@@ -1141,9 +1190,14 @@ mod tests {
                     }
                 }
             }
-            let mut got = TopK::new(&q, k);
-            table.topk(&preds, |_| false, |_| true, &mut got).unwrap();
-            assert_eq!(got.into_sorted(), want.into_sorted(), "{opts:?} query {qi}");
+            let want = want.into_sorted();
+            // Below the split size, and split however small.
+            for split_rows in [usize::MAX, 1] {
+                table.split_rows = split_rows;
+                let mut got = TopK::new(&q, k);
+                table.topk(&preds, |_| false, |_| true, &mut got).unwrap();
+                assert_eq!(got.into_sorted(), want, "{opts:?} query {qi} split from {split_rows} rows");
+            }
         }
     }
 

@@ -1,7 +1,7 @@
-//! A second thread for the unfiltered TopK scan: one is started for the
-//! process and sleeps (parked) between queries, and only where the process
-//! may keep two CPUs busy. `Helper::join` runs one closure here and another
-//! on that thread, and returns once both are done.
+//! A second thread for TopK scans: one is started for the process and
+//! sleeps (parked) between queries, and only where the process may keep two
+//! CPUs busy. `Helper::join` runs one closure here and another on that
+//! thread, and returns once both are done.
 //!
 //! `MVDB_SCAN_THREADS=1` turns the helper off and `=2` turns it on whatever
 //! the CPU quota (for comparisons); `MVDB_SPLIT_MIN_ROWS` changes the table
