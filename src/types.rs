@@ -113,6 +113,19 @@ fn parse_vector_fast(b: &[u8]) -> Option<Vec<f32>> {
     loop {
         i = skip_ws(i);
         let neg = b.get(i) == Some(&b'-');
+        // The benchmark's shape first: its sign is skipped without a branch
+        // and its eight bytes are checked and converted at once.
+        let at = i + usize::from(neg);
+        if let Some(m) = b.get(at..).and_then(six_decimals) {
+            out.push(with_sign(m as f32 / 1e6, neg));
+            i = skip_ws(at + 8);
+            match b.get(i) {
+                Some(b',') => i += 1,
+                Some(b']') => break,
+                _ => return None,
+            }
+            continue;
+        }
         if neg || b.get(i) == Some(&b'+') {
             i += 1;
         }
@@ -145,7 +158,7 @@ fn parse_vector_fast(b: &[u8]) -> Option<Vec<f32>> {
         }
         let p = *POW10.get(exp.unsigned_abs() as usize)?;
         let mag = if exp >= 0 { m as f32 * p } else { m as f32 / p };
-        out.push(if neg { -mag } else { mag });
+        out.push(with_sign(mag, neg));
         i = skip_ws(i);
         match b.get(i) {
             Some(b',') => i += 1,
@@ -154,6 +167,42 @@ fn parse_vector_fast(b: &[u8]) -> Option<Vec<f32>> {
         }
     }
     (skip_ws(i + 1) == b.len()).then_some(out)
+}
+
+/// `-mag` when `neg`, for a `mag` that is never negative, by setting the
+/// sign bit: `if neg { -mag } else { mag }` compiles to a branch, which
+/// random signs mispredict half the time (11.8 against 8.7 ns per element).
+#[inline(always)]
+fn with_sign(mag: f32, neg: bool) -> f32 {
+    f32::from_bits(mag.to_bits() | (u32::from(neg) << 31))
+}
+
+/// For `d.dddddd` followed by a byte that cannot continue a number (the
+/// shape `f"{x:.6f}"` gives for |x| < 10), its value times 10^6. That is at
+/// most 9,999,999 < 2^24, so dividing it by 1e6 in float32 is Clinger's fast
+/// path again. The eight bytes are tested and summed as one u64 (the digit
+/// test and the conversion are simdjson's).
+#[inline(always)]
+fn six_decimals(b: &[u8]) -> Option<u32> {
+    let (head, next) = (b.get(..8)?, *b.get(8)?);
+    if head[1] != b'.' || next.is_ascii_digit() || matches!(next, b'.' | b'e' | b'E') {
+        return None;
+    }
+    // The '.' made a '0', so a valid shape is eight ASCII digits.
+    let x = u64::from_le_bytes(head.try_into().ok()?) & !0xFF00 | 0x3000;
+    let hi = 0xF0F0_F0F0_F0F0_F0F0u64;
+    if (x & hi) | ((x.wrapping_add(0x0606_0606_0606_0606) & hi) >> 4) != 0x3333_3333_3333_3333 {
+        return None;
+    }
+    // The first byte is the most significant digit: pairs, then fours,
+    // then the eight-digit number d * 10^7 + the six decimals.
+    let mut v = x - 0x3030_3030_3030_3030;
+    v = v.wrapping_mul(10).wrapping_add(v >> 8);
+    v = (v & 0x0000_00FF_0000_00FF)
+        .wrapping_mul(100 + (1_000_000 << 32))
+        .wrapping_add(((v >> 16) & 0x0000_00FF_0000_00FF).wrapping_mul(1 + (10_000 << 32)))
+        >> 32;
+    Some(v as u32 - u32::from(head[0] - b'0') * 9_000_000)
 }
 
 fn parse_f32_strict(elem: &str, whole: &str) -> DbResult<f32> {
@@ -273,6 +322,65 @@ mod tests {
             }
         }
         assert!(fast > 100_000, "fast path taken {fast} times");
+    }
+
+    /// The eight-byte path takes `[-]d.dddddd` elements wherever they stand
+    /// and leaves the shapes next to it (one more digit, an exponent, a
+    /// second integer digit, a '+') to the digit loop: every element of
+    /// every vector the fast path accepts gets `str::parse`'s bits, and it
+    /// accepts every vector of the eight-byte shape alone.
+    #[test]
+    fn six_decimals_equals_str_parse() {
+        let mut state = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = |n: u64| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state % n
+        };
+        let is_eight = |e: &str| {
+            let b = e.strip_prefix('-').unwrap_or(e).as_bytes();
+            b.len() == 8 && b[1] == b'.'
+        };
+        let (mut eight, mut only_eight) = (0, 0);
+        for _ in 0..60_000 {
+            let elems: Vec<String> = (0..next(12) + 1)
+                .map(|_| {
+                    let m = next(10_000_000);
+                    let sign = ["", "-", "+"][[0, 0, 0, 1, 1, 1, 2][next(7) as usize]];
+                    let int = if next(8) == 0 { 10 + m / 1_000_000 } else { m / 1_000_000 };
+                    let tail = ["", "", "", "", "7", "e1", "E-2", "0e+3"][next(8) as usize];
+                    format!("{sign}{int}.{:06}{tail}", m % 1_000_000)
+                })
+                .collect();
+            let mut text = String::from([" [", "["][next(2) as usize]);
+            for (k, e) in elems.iter().enumerate() {
+                if k > 0 {
+                    text.push_str([",", ", ", " ,", " , "][next(4) as usize]);
+                }
+                text.push_str(e);
+            }
+            text.push_str(["]", " ]", "] "][next(3) as usize]);
+            let got = parse_vector_fast(text.as_bytes());
+            if elems.iter().all(|e| is_eight(e)) {
+                assert!(got.is_some(), "fast path refused {text}");
+                only_eight += 1;
+            }
+            let Some(got) = got else { continue };
+            assert_eq!(got.len(), elems.len(), "{text}");
+            for (g, e) in got.iter().zip(&elems) {
+                let want = parse_f32_strict(e, &text).unwrap();
+                assert_eq!(g.to_bits(), want.to_bits(), "{e} in {text}");
+                eight += usize::from(is_eight(e));
+            }
+        }
+        assert!(eight > 20_000 && only_eight > 2_000, "eight-byte shape checked {eight} times, alone in {only_eight} vectors");
+        for (text, m) in [("0.000000]", 0), ("9.999999,", 9_999_999), ("1.000000 ", 1_000_000), ("0.000001]", 1)] {
+            assert_eq!(six_decimals(text.as_bytes()), Some(m), "{text}");
+        }
+        for text in ["0.0000001", "1.000000e", "1.000000.", "1.00000]", "1,000000]", "a.000000]", "1.00000a]", "1.000000"] {
+            assert_eq!(six_decimals(text.as_bytes()), None, "{text}");
+        }
     }
 
     #[test]
