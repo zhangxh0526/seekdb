@@ -1,6 +1,6 @@
 //! A second thread for the unfiltered TopK scan: one is started for the
-//! process and, after each job, checks for the next one for 2 us and then
-//! sleeps (parked), and only where the process may keep two CPUs busy. `Helper::join` runs one closure here and another
+//! process and sleeps (parked) between queries, and only where the process
+//! may keep two CPUs busy. `Helper::join` runs one closure here and another
 //! on that thread, and returns once both are done.
 //!
 //! `MVDB_SCAN_THREADS=1` turns the helper off and `=2` turns it on whatever
@@ -15,7 +15,7 @@ use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::OnceLock;
 use std::thread::{self, Thread};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::cgroup;
 
@@ -27,9 +27,6 @@ const PANICKED: u8 = 3;
 /// Turns of the waiting loop spent spinning (about 100 us) before the
 /// caller yields.
 const SPINS: u32 = 1 << 11;
-
-/// How long the helper checks for the next job before it parks.
-const SPIN_BEFORE_PARK: Duration = Duration::from_micros(2);
 
 pub struct Helper {
     thread: Thread,
@@ -139,18 +136,11 @@ impl Helper {
     fn serve(&self) {
         loop {
             // A wake-up may be spurious or come before POSTED is visible.
-            let (spun, mut parked) = (Instant::now(), false);
             while self.state.load(Ordering::Acquire) != POSTED {
-                if !parked && spun.elapsed() < SPIN_BEFORE_PARK {
-                    hint::spin_loop();
-                } else {
-                    parked = true;
-                    thread::park();
-                }
+                thread::park();
             }
             if let Some(s) = &self.stats {
                 s.started.store(Instant::now().duration_since(s.epoch).as_nanos() as u64, Ordering::Relaxed);
-                s.unparked.fetch_add(u64::from(!parked), Ordering::Relaxed);
             }
             // SAFETY: the caller wrote `job` before publishing POSTED and
             // keeps the closure alive until it sees DONE or PANICKED.
@@ -185,7 +175,7 @@ impl Wait<'_> {
         };
         if let Some(s) = &h.stats {
             let done = Instant::now();
-            let started = s.epoch + Duration::from_nanos(s.started.load(Ordering::Relaxed));
+            let started = s.epoch + std::time::Duration::from_nanos(s.started.load(Ordering::Relaxed));
             let mine_done = self.mine_done.unwrap_or(done);
             s.record(started.saturating_duration_since(self.posted), done.saturating_duration_since(mine_done), mine_done.saturating_duration_since(self.posted));
         }
@@ -212,20 +202,18 @@ struct Stats {
     late_over_10us: AtomicU64,
     wait: AtomicU64,
     mine: AtomicU64,
-    /// Jobs the helper found while it spun, without parking.
-    unparked: AtomicU64,
 }
 
 impl Default for Stats {
     fn default() -> Stats {
         let z = || AtomicU64::new(0);
-        Stats { epoch: Instant::now(), started: z(), splits: z(), start_delay: z(), max_start_delay: z(), late_over_10us: z(), wait: z(), mine: z(), unparked: z() }
+        Stats { epoch: Instant::now(), started: z(), splits: z(), start_delay: z(), max_start_delay: z(), late_over_10us: z(), wait: z(), mine: z() }
     }
 }
 
 impl Stats {
-    fn record(&self, start_delay: Duration, wait: Duration, mine: Duration) {
-        let ns = |d: Duration| d.as_nanos() as u64;
+    fn record(&self, start_delay: std::time::Duration, wait: std::time::Duration, mine: std::time::Duration) {
+        let ns = |d: std::time::Duration| d.as_nanos() as u64;
         self.splits.fetch_add(1, Ordering::Relaxed);
         self.start_delay.fetch_add(ns(start_delay), Ordering::Relaxed);
         self.max_start_delay.fetch_max(ns(start_delay), Ordering::Relaxed);
@@ -243,9 +231,8 @@ pub fn report() {
     let n = s.splits.load(Ordering::Relaxed).max(1) as f64;
     let us = |a: &AtomicU64| a.load(Ordering::Relaxed) as f64 / n / 1000.0;
     eprintln!(
-        "topk-helper: {} splits, {} found while spinning; helper start delay mean {:.1} us, max {:.1} us, {} over 10 us; caller's half {:.1} us, then waited {:.1} us",
+        "topk-helper: {} splits; helper start delay mean {:.1} us, max {:.1} us, {} over 10 us; caller's half {:.1} us, then waited {:.1} us",
         s.splits.load(Ordering::Relaxed),
-        s.unparked.load(Ordering::Relaxed),
         us(&s.start_delay),
         s.max_start_delay.load(Ordering::Relaxed) as f64 / 1000.0,
         s.late_over_10us.load(Ordering::Relaxed),
