@@ -8,6 +8,7 @@ use std::time::Instant;
 
 use minivectordb::cgroup;
 use minivectordb::db_err;
+use minivectordb::engine::helper;
 use minivectordb::engine::result::{Outcome, RowSink};
 use minivectordb::engine::{Engine, EngineOptions};
 use minivectordb::error::DbResult;
@@ -38,6 +39,9 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // The thread that takes half of each unfiltered TopK scan, if any,
+    // starts before the first query.
+    let _ = helper::get();
     let mut out = BufWriter::new(io::stdout().lock());
     let _ = protocol::write_ready(&mut out);
     let _ = out.flush();
@@ -90,6 +94,7 @@ fn main() {
                 engine.abort_transaction();
                 let _ = protocol::write_ok(&mut out, id);
                 let _ = out.flush();
+                helper::report();
                 return;
             }
             Ok(Request { id, op: Op::Other(op) }) => {
@@ -101,6 +106,7 @@ fn main() {
     }
     // End of input without a shutdown request: dropping the engine discards
     // any open transaction; every committed one is already durable.
+    helper::report();
 }
 
 /// After answering a query, the next request is waited for by polling

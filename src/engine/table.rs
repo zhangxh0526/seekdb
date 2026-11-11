@@ -6,11 +6,12 @@
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
-use std::ops::RangeInclusive;
+use std::ops::{Range, RangeInclusive};
 
 use super::expr::{holds, ColPred, PredValue};
+use super::helper;
 use super::ivf::Ivf;
-use super::sq8::Sq8;
+use super::sq8::{Sq8, Sq8Query};
 use super::IndexOptions;
 use super::topk::TopK;
 use crate::error::DbResult;
@@ -467,13 +468,17 @@ pub struct Table {
     indexed_rows: usize,
     /// How much of the table filtered TopK scans through the lists visit.
     filtered_lists: Cell<ListUse>,
+    /// The same for unfiltered scans, kept only while they can be split.
+    unfiltered_lists: Cell<ListUse>,
 }
 
 /// Average fraction of rows a filtered TopK through the lists visited, and
 /// the number of filtered TopK queries so far. When the lists stop pruning
 /// (wide clusters, uniform data), selecting the matching rows directly is
 /// cheaper, so filtered queries skip the lists except every 16th one, which
-/// keeps the average current.
+/// keeps the average current. Unfiltered queries that can be split keep an
+/// average of their own and skip the lists the same way, for a scan of both
+/// halves of the slots at once.
 #[derive(Clone, Copy, Default)]
 struct ListUse {
     visited: f32,
@@ -488,14 +493,80 @@ const BLOCK: usize = 64;
 enum Cand<'a> {
     Run(&'a [u32]),
     Scattered(&'a [u32]),
-    Live(std::ops::Range<usize>),
+    Live(Range<usize>),
+}
+
+/// Offers to a TopK the candidates (all passing the predicates) that the
+/// codes keep, tightening the codes' bound whenever the K-th distance drops.
+struct Offer<'a> {
+    cache: &'a RowCache,
+    col: usize,
+    codes: Option<Sq8Query<'a>>,
+    kth: Option<f64>,
+    kept: Vec<u32>,
+}
+
+impl<'a> Offer<'a> {
+    fn new(cache: &'a RowCache, col: usize, codes: Option<&'a Sq8>, top: &TopK<'_>) -> Offer<'a> {
+        let mut codes = codes.map(|c| c.query(top.query()));
+        let kth = top.kth();
+        if let (Some(c), Some(k)) = (&mut codes, kth) {
+            c.set_kth(k);
+        }
+        Offer { cache, col, codes, kth, kept: Vec::with_capacity(BLOCK) }
+    }
+
+    fn run(&mut self, cand: Cand<'_>, top: &mut TopK<'_>, skip: &impl Fn(i64) -> bool, rest: &impl Fn(&RowView<'_>) -> bool) {
+        let cache = self.cache;
+        self.kept.clear();
+        match (&self.codes, cand) {
+            (Some(c), Cand::Run(slots)) => c.keep(slots, false, &mut self.kept),
+            (Some(c), Cand::Scattered(slots)) => c.keep(slots, true, &mut self.kept),
+            (Some(c), Cand::Live(range)) => c.keep_live(range, &cache.live, &mut self.kept),
+            (None, Cand::Run(slots) | Cand::Scattered(slots)) => self.kept.extend_from_slice(slots),
+            (None, Cand::Live(range)) => self.kept.extend(range.filter(|&s| cache.live[s]).map(|s| s as u32)),
+        }
+        for &s in &self.kept {
+            let row = cache.view(s as usize);
+            if skip(row.pk) || !rest(&row) {
+                continue;
+            }
+            if let ValRef::Vector(v) = cache.get(s as usize, self.col) {
+                top.offer(row.pk, v);
+                let k = top.kth();
+                if k != self.kth {
+                    self.kth = k;
+                    if let (Some(c), Some(k)) = (&mut self.codes, k) {
+                        c.set_kth(k);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Offers the live slots of `slots` (starting on a multiple of BLOCK) to
+/// `top`, a block at a time.
+fn scan_live(
+    cache: &RowCache,
+    col: usize,
+    codes: Option<&Sq8>,
+    slots: Range<usize>,
+    skip: &impl Fn(i64) -> bool,
+    rest: &impl Fn(&RowView<'_>) -> bool,
+    top: &mut TopK<'_>,
+) {
+    let mut offer = Offer::new(cache, col, codes, top);
+    for start in slots.clone().step_by(BLOCK) {
+        offer.run(Cand::Live(start..(start + BLOCK).min(slots.end)), top, skip, rest);
+    }
 }
 
 impl Table {
     pub fn new(def: TableDef) -> Table {
         let cache = Some(RowCache::new(&def));
         let vector_col = def.columns.iter().position(|c| matches!(c.ty, DataType::Vector(_)));
-        Table { def, rows: BTreeMap::new(), cache, deferred: false, read: false, vector_col, index: None, codes: None, indexed_rows: 0, filtered_lists: Cell::default() }
+        Table { def, rows: BTreeMap::new(), cache, deferred: false, read: false, vector_col, index: None, codes: None, indexed_rows: 0, filtered_lists: Cell::default(), unfiltered_lists: Cell::default() }
     }
 
     pub fn is_cached(&self) -> bool {
@@ -744,12 +815,15 @@ impl Table {
     /// lists are visited by increasing lower bound and the scan stops at the
     /// first one that cannot beat the K-th distance so far; with codes, rows
     /// they prove too far are passed over without reading their floats.
-    /// Either way `top` ends up as if every row had been offered.
+    /// Without predicates, a table of `helper::min_rows()` rows or more is
+    /// scanned slot by slot in two halves, one on the helper thread, each
+    /// into a TopK of its own. Either way `top` ends up as if every row had
+    /// been offered.
     pub fn topk(
         &self,
         preds: &[ColPred<'_>],
-        skip: impl Fn(i64) -> bool,
-        rest: impl Fn(&RowView<'_>) -> bool,
+        skip: impl Fn(i64) -> bool + Sync,
+        rest: impl Fn(&RowView<'_>) -> bool + Sync,
         top: &mut TopK<'_>,
     ) -> DbResult<()> {
         let (Some(cache), Some(col)) = (&self.cache, self.vector_col) else {
@@ -760,48 +834,21 @@ impl Table {
             Some(probes) => probes.iter().all(|p| p.holds(s)),
             None => preds.iter().all(|p| p.test(&cache.view(s))),
         };
-        let mut codes = self.codes.as_ref().map(|c| c.query(top.query()));
-        let mut kth = top.kth();
-        if let (Some(c), Some(k)) = (&mut codes, kth) {
-            c.set_kth(k);
-        }
-        let mut kept: Vec<u32> = Vec::with_capacity(BLOCK);
-        // Offers the candidates (all passing the predicates) that the codes
-        // keep, tightening the codes' bound whenever the K-th distance drops.
-        let mut run = |cand: Cand<'_>, top: &mut TopK<'_>| {
-            kept.clear();
-            match (&codes, cand) {
-                (Some(c), Cand::Run(slots)) => c.keep(slots, false, &mut kept),
-                (Some(c), Cand::Scattered(slots)) => c.keep(slots, true, &mut kept),
-                (Some(c), Cand::Live(range)) => c.keep_live(range, &cache.live, &mut kept),
-                (None, Cand::Run(slots) | Cand::Scattered(slots)) => kept.extend_from_slice(slots),
-                (None, Cand::Live(range)) => kept.extend(range.filter(|&s| cache.live[s]).map(|s| s as u32)),
-            }
-            for &s in &kept {
-                let row = cache.view(s as usize);
-                if skip(row.pk) || !rest(&row) {
-                    continue;
-                }
-                if let ValRef::Vector(v) = cache.get(s as usize, col) {
-                    top.offer(row.pk, v);
-                    let k = top.kth();
-                    if k != kth {
-                        kth = k;
-                        if let (Some(c), Some(k)) = (&mut codes, k) {
-                            c.set_kth(k);
-                        }
-                    }
-                }
-            }
-        };
+        let mut offer = Offer::new(cache, col, self.codes.as_ref(), top);
+        let mut run = |cand: Cand<'_>, top: &mut TopK<'_>| offer.run(cand, top, &skip, &rest);
         let filtered = !preds.is_empty();
+        // Unfiltered scans of a large table are split between two threads,
+        // over the slots rather than the lists, so they take the lists only
+        // while the lists prune.
+        let helper = if filtered || self.rows.len() < helper::min_rows() { None } else { helper::get() };
+        let uses = if filtered { Some(&self.filtered_lists) } else { helper.map(|_| &self.unfiltered_lists) };
         let lists = self.index.as_ref().filter(|_| {
-            if !filtered {
+            let Some(uses) = uses else {
                 return true;
-            }
-            let mut u = self.filtered_lists.get();
+            };
+            let mut u = uses.get();
             u.queries = u.queries.wrapping_add(1);
-            self.filtered_lists.set(u);
+            uses.set(u);
             u.visited <= 0.5 || u.queries.is_multiple_of(16)
         });
         let mut block: Vec<u32> = Vec::with_capacity(BLOCK);
@@ -823,18 +870,32 @@ impl Table {
                     }
                 }
             }
-            if filtered {
-                let mut u = self.filtered_lists.get();
+            if let Some(uses) = uses {
+                let mut u = uses.get();
                 u.visited = 0.75 * u.visited + 0.25 * (visited as f32 / self.rows.len().max(1) as f32);
-                self.filtered_lists.set(u);
+                uses.set(u);
             }
             return Ok(());
         }
-        match &probes {
-            Some(probes) if !probes.is_empty() => {
+        match (&probes, helper) {
+            (Some(probes), _) if !probes.is_empty() => {
                 for chunk in select(cache, probes).chunks(BLOCK) {
                     run(Cand::Scattered(chunk), top);
                 }
+            }
+            (_, Some(h)) => {
+                // Lower half here, upper half on the helper thread into a
+                // TopK of its own, merged at the end.
+                let n = cache.live.len();
+                let mid = n / 2 / BLOCK * BLOCK;
+                let codes = self.codes.as_ref();
+                let mut theirs = TopK::new(top.query(), top.k());
+                let (skip, rest) = (&skip, &rest);
+                h.join(
+                    || scan_live(cache, col, codes, 0..mid, skip, rest, top),
+                    || scan_live(cache, col, codes, mid..n, skip, rest, &mut theirs),
+                );
+                top.merge(theirs);
             }
             _ => {
                 for start in (0..cache.live.len()).step_by(BLOCK) {
@@ -924,6 +985,70 @@ mod tests {
             check_cached_topk(IndexOptions { min_rows: 1, max_list_rows: usize::MAX, lists, codes });
         }
         check_cached_topk(IndexOptions { min_rows: 1, max_list_rows: 2000, lists: true, codes: true });
+    }
+
+    /// An unfiltered TopK over a table large enough to be split between two
+    /// threads returns what offering every row does, through the lists (told
+    /// they prune nothing, or left to measure it) or without them, with codes
+    /// or without, while skipping some rows and testing others.
+    #[test]
+    fn split_topk_matches_model() {
+        for (lists, codes, unpruned) in [(true, true, true), (true, true, false), (true, false, true), (false, true, false), (false, false, false)] {
+            let def = TableDef {
+                id: 1,
+                name: "t".into(),
+                columns: vec![Column { name: "id".into(), ty: DataType::BigInt }, Column { name: "v".into(), ty: DataType::Vector(16) }],
+                pk: 0,
+                vector_index: None,
+            };
+            let mut x = 7u64;
+            let mut point = move || -> Vec<f32> {
+                (0..16)
+                    .map(|_| {
+                        x ^= x << 13;
+                        x ^= x >> 7;
+                        x ^= x << 17;
+                        // Quarter steps make exact distance ties common.
+                        (((x >> 40) as f32 / (1u64 << 24) as f32 * 2.0 - 1.0) * 8.0).round() / 4.0
+                    })
+                    .collect()
+            };
+            let loc = RowLoc { seg: 0, off: 0, len: 0 };
+            let mut table = Table::new(def);
+            let mut model: BTreeMap<i64, Vec<f32>> = BTreeMap::new();
+            let mut put = |table: &mut Table, pk: i64, v: Vec<f32>| {
+                table.apply_put(pk, loc, Some(vec![Value::Int(pk), Value::Vector(v.clone())]));
+                model.insert(pk, v);
+            };
+            for pk in 0..6000 {
+                put(&mut table, pk, point());
+            }
+            table.prepare_index(IndexOptions { min_rows: 1, max_list_rows: usize::MAX, lists, codes });
+            for pk in 6000..6400 {
+                put(&mut table, pk, point());
+            }
+            for pk in (0..6400).step_by(5) {
+                table.apply_delete(pk);
+                model.remove(&pk);
+            }
+            assert!(table.rows.len() >= helper::min_rows());
+            if unpruned {
+                table.unfiltered_lists.set(ListUse { visited: 1.0, queries: 0 });
+            }
+            for qi in 0..60 {
+                let q = point();
+                let k = [1, 10, 50][qi % 3];
+                let skip = |pk: i64| pk % 13 == 0;
+                let rest = |row: &RowView<'_>| row.pk % 7 != 3;
+                let mut want = TopK::new(&q, k);
+                for (&pk, v) in model.iter().filter(|(&pk, _)| !skip(pk) && pk % 7 != 3) {
+                    want.offer(pk, v);
+                }
+                let mut got = TopK::new(&q, k);
+                table.topk(&[], skip, rest, &mut got).unwrap();
+                assert_eq!(got.into_sorted(), want.into_sorted(), "lists {lists} codes {codes} unpruned {unpruned} query {qi}");
+            }
+        }
     }
 
     /// Lists built below the row cap are dropped by the first rebuild above

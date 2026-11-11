@@ -57,7 +57,11 @@ impl<'q> TopK<'q> {
             return;
         }
         self.exact_evals += 1;
-        let key = (Dist(l2_distance(v, self.query)), pk);
+        self.push((Dist(l2_distance(v, self.query)), pk));
+    }
+
+    #[inline]
+    fn push(&mut self, key: (Dist, i64)) {
         if self.heap.len() < self.k {
             self.heap.push(key);
         } else if self.heap.peek().is_some_and(|top| key < *top) {
@@ -73,6 +77,19 @@ impl<'q> TopK<'q> {
 
     pub fn query(&self) -> &'q [f32] {
         self.query
+    }
+
+    pub fn k(&self) -> usize {
+        self.k
+    }
+
+    /// Takes in the rows another TopK for the same query and `k` holds, as
+    /// if they had been offered here.
+    pub fn merge(&mut self, other: TopK<'_>) {
+        self.exact_evals += other.exact_evals;
+        for key in other.heap {
+            self.push(key);
+        }
     }
 
     /// Distance of the K-th row so far, once K rows are held: rows farther

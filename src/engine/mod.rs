@@ -9,6 +9,7 @@
 //! one is an error (`Semantics`).
 
 pub mod expr;
+pub mod helper;
 mod ivf;
 mod sq8;
 mod query;
