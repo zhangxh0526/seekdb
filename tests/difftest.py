@@ -290,6 +290,9 @@ class Stmt:
 # (Semantics in src/engine/mod.rs).
 NESTED_BEGIN_IS_ERROR = True
 UPDATE_COUNTS_MATCHED = True
+# Dimensions of generated vector columns (--dims); above 64 the 8-bit scan
+# stops early for rows already out of reach.
+VEC_DIMS = (1, 4)
 
 
 class Model:
@@ -550,7 +553,7 @@ class Gen:
         if self.rng.random() < 0.7:
             cols.append(Col("num", "int", 0))
         if self.rng.random() < 0.85:
-            cols.append(Col("v", "vec", self.rng.randint(1, 4)))
+            cols.append(Col("v", "vec", self.rng.randint(*VEC_DIMS)))
         if self.rng.random() < 0.3:
             cols.append(Col("note", "str", 8))
         self.rng.shuffle(cols)
@@ -1002,12 +1005,14 @@ def main():
     ap.add_argument("--workdir", default=None)
     ap.add_argument("--keep", action="store_true", help="keep data dirs of passing seeds")
     ap.add_argument("--stats", action="store_true", help="print how often each outcome was checked")
+    ap.add_argument("--dims", default="1:4", help="vector columns get LO to HI dimensions (LO:HI, inclusive)")
     ap.add_argument("--nested-begin", choices=["error", "commit"], default="error",
                     help="BEGIN inside a transaction: an error that keeps it open, or an implicit commit")
     ap.add_argument("--update-count", choices=["matched", "changed"], default="matched",
                     help="UPDATE reports the rows its WHERE matched, or only those whose values changed")
     args = ap.parse_args()
-    global NESTED_BEGIN_IS_ERROR, UPDATE_COUNTS_MATCHED
+    global NESTED_BEGIN_IS_ERROR, UPDATE_COUNTS_MATCHED, VEC_DIMS
+    VEC_DIMS = tuple(int(x) for x in args.dims.split(":"))
     NESTED_BEGIN_IS_ERROR = args.nested_begin == "error"
     UPDATE_COUNTS_MATCHED = args.update_count == "matched"
     os.environ.update(MVDB_NESTED_BEGIN=args.nested_begin, MVDB_UPDATE_COUNT=args.update_count)

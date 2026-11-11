@@ -995,20 +995,22 @@ mod tests {
     /// An unfiltered TopK over a table large enough to be split between two
     /// threads returns what offering every row does, through the lists (told
     /// they prune nothing, or left to measure it) or without them, with codes
-    /// or without, while skipping some rows and testing others.
+    /// or without (at 96 dimensions their scan stops early for some rows),
+    /// while skipping some rows and testing others.
     #[test]
     fn split_topk_matches_model() {
-        for (lists, codes, unpruned) in [(true, true, true), (true, true, false), (true, false, true), (false, true, false), (false, false, false)] {
+        let configs = [(true, true, true), (true, true, false), (true, false, true), (false, true, false), (false, false, false)];
+        for (dim, (lists, codes, unpruned)) in [16usize, 96].into_iter().flat_map(|dim| configs.map(|c| (dim, c))) {
             let def = TableDef {
                 id: 1,
                 name: "t".into(),
-                columns: vec![Column { name: "id".into(), ty: DataType::BigInt }, Column { name: "v".into(), ty: DataType::Vector(16) }],
+                columns: vec![Column { name: "id".into(), ty: DataType::BigInt }, Column { name: "v".into(), ty: DataType::Vector(dim as u32) }],
                 pk: 0,
                 vector_index: None,
             };
             let mut x = 7u64;
             let mut point = move || -> Vec<f32> {
-                (0..16)
+                (0..dim)
                     .map(|_| {
                         x ^= x << 13;
                         x ^= x >> 7;
@@ -1051,7 +1053,7 @@ mod tests {
                 }
                 let mut got = TopK::new(&q, k);
                 table.topk(&[], skip, rest, &mut got).unwrap();
-                assert_eq!(got.into_sorted(), want.into_sorted(), "lists {lists} codes {codes} unpruned {unpruned} query {qi}");
+                assert_eq!(got.into_sorted(), want.into_sorted(), "dim {dim} lists {lists} codes {codes} unpruned {unpruned} query {qi}");
             }
         }
     }
