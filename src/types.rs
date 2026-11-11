@@ -177,6 +177,32 @@ fn with_sign(mag: f32, neg: bool) -> f32 {
     f32::from_bits(mag.to_bits() | (u32::from(neg) << 31))
 }
 
+/// Largest magnitude a 24-bit vector element holds, in millionths: the 23
+/// bits below its sign bit.
+pub const MILLIONTHS_MAX: u32 = (1 << 23) - 1;
+
+/// The 24-bit code of `x` (its sign bit, then |x| in millionths) and whether
+/// `from_millionths` gives `x` back bit for bit. It does exactly for the
+/// float32 nearest m / 10^6 with m <= MILLIONTHS_MAX, which is what every
+/// element written `[-]d.dddddd` with d < 8 parses to: rounding |x| * 10^6
+/// finds that m, since half an ulp of any |x| < 8.39 is under 0.48
+/// millionths, and the check rejects every other value. No branches, so
+/// loops over it vectorize.
+#[inline(always)]
+pub fn millionths(x: f32) -> (u32, bool) {
+    // Through i32, which SSE2 converts four at a time; u32 it does not.
+    let m = (f64::from(x.abs()) * 1e6 + 0.5) as i32 as u32;
+    let code = (m & MILLIONTHS_MAX) | (x.to_bits() >> 31 << 23);
+    (code, m <= MILLIONTHS_MAX && from_millionths(code).to_bits() == x.to_bits())
+}
+
+/// The element a `millionths` code stands for: the same float32 division
+/// the parser does for `d.dddddd`, then the sign bit.
+#[inline(always)]
+pub fn from_millionths(code: u32) -> f32 {
+    with_sign((code & MILLIONTHS_MAX) as f32 / 1e6, code >> 23 & 1 != 0)
+}
+
 /// For `d.dddddd` followed by a byte that cannot continue a number (the
 /// shape `f"{x:.6f}"` gives for |x| < 10), its value times 10^6. That is at
 /// most 9,999,999 < 2^24, so dividing it by 1e6 in float32 is Clinger's fast
@@ -394,6 +420,37 @@ mod tests {
         assert_eq!(v.iter().map(|x| x.to_bits()).collect::<Vec<_>>(), want.iter().map(|x| x.to_bits()).collect::<Vec<_>>());
         for slow in ["[]", "[ ]", "[1,]", "[1e]", "[0.12345678901]", "[1e11]", "[1\u{a0}]", "[1]x"] {
             assert!(parse_vector_fast(slow.as_bytes()).is_none(), "{slow}");
+        }
+    }
+
+    /// Every code, both signs, against the value the parser makes of it;
+    /// a sample against `str::parse` of the decimal it stands for.
+    #[test]
+    fn millionths_round_trip() {
+        for m in 0..=MILLIONTHS_MAX {
+            for neg in [false, true] {
+                let x = with_sign(m as f32 / 1e6, neg);
+                let code = m | u32::from(neg) << 23;
+                assert_eq!(millionths(x), (code, true), "{m} {neg}");
+                assert_eq!(from_millionths(code).to_bits(), x.to_bits(), "{m} {neg}");
+            }
+        }
+        for m in (0..=MILLIONTHS_MAX).step_by(997).chain([MILLIONTHS_MAX]) {
+            let text = format!("-{}.{:06}", m / 1_000_000, m % 1_000_000);
+            let x: f32 = text.parse().unwrap();
+            assert_eq!(millionths(x), (m | 1 << 23, true), "{text}");
+            assert_eq!(millionths(x.abs()), (m, true), "{text}");
+        }
+    }
+
+    #[test]
+    fn millionths_rejects() {
+        let near = |x: f32, up: bool| f32::from_bits(if up { x.to_bits() + 1 } else { x.to_bits() - 1 });
+        for x in [
+            8.388608, -8.388608, 9.5, 1e7, f32::MAX, f32::INFINITY, f32::NAN, 1e-7, -4e-7, 0.1234567,
+            f32::MIN_POSITIVE, f32::from_bits(1), near(0.1, true), near(-0.1, false), near(8.388607, true),
+        ] {
+            assert!(!millionths(x).1, "{x:e}");
         }
     }
 

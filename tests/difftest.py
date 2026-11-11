@@ -296,6 +296,10 @@ VEC_DIMS = (1, 4)
 # Vector components written as the benchmark writes them, `-1.750000`, which
 # the engine parses on its eight-byte path (--six-decimals); same values.
 SIX_DECIMALS = False
+# One component in eight beyond the 24-bit codes' 8.388607 (--wide), so a
+# vector column holds rows of both encodings; still quarters, so distances
+# stay exact.
+WIDE = False
 
 
 class Model:
@@ -503,6 +507,8 @@ class Gen:
 
     def comp(self):
         k = self.rng.randint(-8, 8)
+        if WIDE and self.rng.random() < 0.125:
+            k = self.rng.choice([-1, 1]) * self.rng.randint(34, 48)
         if SIX_DECIMALS:
             return f"{k / 4:.6f}"
         return "0" if k == 0 else f"{k / 4:g}"
@@ -1012,13 +1018,15 @@ def main():
     ap.add_argument("--stats", action="store_true", help="print how often each outcome was checked")
     ap.add_argument("--dims", default="1:4", help="vector columns get LO to HI dimensions (LO:HI, inclusive)")
     ap.add_argument("--six-decimals", action="store_true", help="write vector components as -1.750000 instead of -1.75")
+    ap.add_argument("--wide", action="store_true", help="one vector component in eight between 8.5 and 12 in magnitude")
     ap.add_argument("--nested-begin", choices=["error", "commit"], default="error",
                     help="BEGIN inside a transaction: an error that keeps it open, or an implicit commit")
     ap.add_argument("--update-count", choices=["matched", "changed"], default="matched",
                     help="UPDATE reports the rows its WHERE matched, or only those whose values changed")
     args = ap.parse_args()
-    global NESTED_BEGIN_IS_ERROR, UPDATE_COUNTS_MATCHED, VEC_DIMS, SIX_DECIMALS
+    global NESTED_BEGIN_IS_ERROR, UPDATE_COUNTS_MATCHED, VEC_DIMS, SIX_DECIMALS, WIDE
     SIX_DECIMALS = args.six_decimals
+    WIDE = args.wide
     VEC_DIMS = tuple(int(x) for x in args.dims.split(":"))
     NESTED_BEGIN_IS_ERROR = args.nested_begin == "error"
     UPDATE_COUNTS_MATCHED = args.update_count == "matched"
