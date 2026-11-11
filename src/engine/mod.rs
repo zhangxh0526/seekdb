@@ -17,6 +17,7 @@ pub mod result;
 mod table;
 mod topk;
 mod txn;
+mod veccol;
 
 use std::collections::HashMap;
 use std::path::Path;

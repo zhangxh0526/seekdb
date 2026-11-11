@@ -14,12 +14,13 @@ use super::ivf::Ivf;
 use super::sq8::{Sq8, Sq8Query};
 use super::IndexOptions;
 use super::topk::TopK;
+use super::veccol::{VecCol, VecRef};
 use crate::error::DbResult;
 use crate::sql::ast::CmpOp;
 use crate::storage::catalog::TableDef;
 use crate::storage::log::{LogStore, OpView, RowLoc};
 use crate::storage::row::decode_row;
-use crate::types::{DataType, Value};
+use crate::types::{DataType, Value, MILLIONTHS_BYTES};
 use crate::bail;
 
 const NO_SLOT: u32 = u32::MAX;
@@ -33,7 +34,7 @@ pub struct Entry {
 pub enum ValRef<'a> {
     Int(i64),
     Str(&'a str),
-    Vector(&'a [f32]),
+    Vector(VecRef<'a>),
 }
 
 /// Read-only view of one row, either materialized values or a slot of the
@@ -61,7 +62,7 @@ impl<'a> RowView<'a> {
             Src::Values(values) => match &values[col] {
                 Value::Int(i) => ValRef::Int(*i),
                 Value::Str(s) => ValRef::Str(s),
-                Value::Vector(v) => ValRef::Vector(v),
+                Value::Vector(v) => ValRef::Vector(VecRef::F32(v)),
             },
             Src::Cache(cache, slot) => cache.get(slot, col),
         }
@@ -95,7 +96,7 @@ enum ColData {
     Pk,
     Int(Vec<i64>),
     Str(StrCol),
-    Vector { dim: usize, data: Vec<f32> },
+    Vector(VecCol),
 }
 
 /// Strings of one column, back to back in one buffer.
@@ -211,18 +212,16 @@ impl ColData {
             ColData::Pk => {}
             ColData::Int(v) => v.push(0),
             ColData::Str(s) => s.grow(),
-            ColData::Vector { dim, data } => data.resize(data.len() + *dim, 0.0),
+            ColData::Vector(c) => c.grow(),
         }
     }
 
-    fn set(&mut self, slot: usize, value: Value) {
+    fn set(&mut self, slot: usize, value: &Value) {
         match (self, value) {
             (ColData::Pk, _) => {}
-            (ColData::Int(c), Value::Int(x)) => c[slot] = x,
-            (ColData::Str(c), Value::Str(s)) => c.set(slot, &s),
-            (ColData::Vector { dim, data }, Value::Vector(v)) if v.len() == *dim => {
-                data[slot * *dim..(slot + 1) * *dim].copy_from_slice(&v);
-            }
+            (ColData::Int(c), Value::Int(x)) => c[slot] = *x,
+            (ColData::Str(c), Value::Str(s)) => c.set(slot, s),
+            (ColData::Vector(c), Value::Vector(v)) if v.len() == c.dim() => c.set(slot, v),
             _ => debug_assert!(false, "row value does not match its column type"),
         }
     }
@@ -232,7 +231,7 @@ impl ColData {
             ColData::Pk => 0,
             ColData::Int(v) => v.capacity() * 8,
             ColData::Str(s) => s.bytes(),
-            ColData::Vector { data, .. } => data.capacity() * 4,
+            ColData::Vector(c) => c.bytes(),
         }
     }
 }
@@ -247,13 +246,15 @@ impl RowCache {
                 _ if i == def.pk => ColData::Pk,
                 DataType::BigInt => ColData::Int(Vec::new()),
                 DataType::Varchar(_) => ColData::Str(StrCol::new()),
-                DataType::Vector(dim) => ColData::Vector { dim: dim as usize, data: Vec::new() },
+                DataType::Vector(dim) => ColData::Vector(VecCol::new(dim as usize)),
             })
             .collect();
         RowCache { pks: Vec::new(), live: Vec::new(), cols, free: Vec::new() }
     }
 
-    /// Bytes `n` rows take, not counting string contents.
+    /// Bytes `n` rows take, not counting string contents, with vectors in
+    /// codes: a column that turns to float32 is caught by `load_cache`
+    /// checking as it goes.
     fn estimate(def: &TableDef, n: usize) -> usize {
         let per_row: usize = def
             .columns
@@ -261,7 +262,7 @@ impl RowCache {
             .map(|c| match c.ty {
                 DataType::BigInt => 8,
                 DataType::Varchar(_) => size_of::<(usize, usize)>() + 4,
-                DataType::Vector(dim) => dim as usize * 4,
+                DataType::Vector(dim) => dim as usize * MILLIONTHS_BYTES,
             })
             .sum();
         n.saturating_mul(per_row + 9)
@@ -280,12 +281,12 @@ impl RowCache {
                         d.codes.reserve_exact(n);
                     }
                 }
-                ColData::Vector { dim, data } => data.reserve_exact(n * *dim),
+                ColData::Vector(c) => c.reserve_exact(n),
             }
         }
     }
 
-    fn insert(&mut self, pk: i64, row: Vec<Value>) -> u32 {
+    fn insert(&mut self, pk: i64, row: &[Value]) -> u32 {
         let slot = match self.free.pop() {
             Some(s) => s as usize,
             None => {
@@ -323,7 +324,7 @@ impl RowCache {
             ColData::Pk => ValRef::Int(self.pks[slot]),
             ColData::Int(v) => ValRef::Int(v[slot]),
             ColData::Str(s) => ValRef::Str(s.get(slot)),
-            ColData::Vector { dim, data } => ValRef::Vector(&data[slot * dim..(slot + 1) * dim]),
+            ColData::Vector(c) => ValRef::Vector(c.get(slot)),
         }
     }
 
@@ -350,36 +351,14 @@ impl RowCache {
                         d.codes = gather(&d.codes, order);
                     }
                 }
-                ColData::Vector { dim, data } => {
-                    let dim = *dim;
-                    let mut done = vec![false; order.len()];
-                    let mut tmp = vec![0f32; dim];
-                    for start in 0..order.len() {
-                        if done[start] {
-                            continue;
-                        }
-                        tmp.copy_from_slice(&data[start * dim..][..dim]);
-                        let mut j = start;
-                        loop {
-                            done[j] = true;
-                            let k = order[j] as usize;
-                            if k == start {
-                                data[j * dim..][..dim].copy_from_slice(&tmp);
-                                break;
-                            }
-                            data.copy_within(k * dim..(k + 1) * dim, j * dim);
-                            j = k;
-                        }
-                    }
-                }
+                ColData::Vector(c) => c.permute(order),
             }
         }
     }
 
-    /// Dimension and packed floats of a vector column.
-    fn vectors(&self, col: usize) -> Option<(usize, &[f32])> {
+    fn vectors(&self, col: usize) -> Option<&VecCol> {
         match self.cols.get(col)? {
-            ColData::Vector { dim, data } => Some((*dim, data)),
+            ColData::Vector(c) => Some(c),
             _ => None,
         }
     }
@@ -508,6 +487,8 @@ struct Offer<'a> {
     codes: Option<Sq8Query<'a>>,
     kth: Option<f64>,
     kept: Vec<u32>,
+    /// A candidate's floats, when the column holds codes.
+    floats: Vec<f32>,
 }
 
 impl<'a> Offer<'a> {
@@ -517,7 +498,7 @@ impl<'a> Offer<'a> {
         if let (Some(c), Some(k)) = (&mut codes, kth) {
             c.set_kth(k);
         }
-        Offer { cache, col, codes, kth, kept: Vec::with_capacity(BLOCK) }
+        Offer { cache, col, codes, kth, kept: Vec::with_capacity(BLOCK), floats: Vec::new() }
     }
 
     #[inline(always)]
@@ -537,7 +518,7 @@ impl<'a> Offer<'a> {
                 continue;
             }
             if let ValRef::Vector(v) = cache.get(s as usize, self.col) {
-                top.offer(row.pk, v);
+                top.offer(row.pk, v.floats(&mut self.floats));
                 let k = top.kth();
                 if k != self.kth {
                     self.kth = k;
@@ -642,7 +623,7 @@ impl Table {
                     continue;
                 }
                 let Some(e) = rows.get_mut(pk).filter(|e| e.loc == *loc) else { continue };
-                e.slot = cache.insert(*pk, decode_row(def, *pk, row)?);
+                e.slot = cache.insert(*pk, &decode_row(def, *pk, row)?);
                 loaded += 1;
                 fits = cache.bytes() <= budget;
             }
@@ -680,15 +661,13 @@ impl Table {
                         ix.remove(old);
                     }
                 }
-                let slot = cache.insert(pk, row);
-                if let (Some(col), true) = (self.vector_col, index.is_some() || self.codes.is_some()) {
-                    if let ValRef::Vector(v) = cache.get(slot as usize, col) {
-                        if let Some(ix) = index {
-                            ix.insert(slot, v);
-                        }
-                        if let Some(codes) = &mut self.codes {
-                            codes.set(slot, v);
-                        }
+                let slot = cache.insert(pk, &row);
+                if let Some(Value::Vector(v)) = self.vector_col.map(|col| &row[col]) {
+                    if let Some(ix) = index {
+                        ix.insert(slot, v);
+                    }
+                    if let Some(codes) = &mut self.codes {
+                        codes.set(slot, v);
                     }
                 }
                 slot
@@ -710,7 +689,7 @@ impl Table {
             return;
         };
         for (col, value) in sets {
-            cache.cols[*col].set(slot as usize, value.clone());
+            cache.cols[*col].set(slot as usize, value);
             if let (true, Value::Vector(v)) = (Some(*col) == self.vector_col, value) {
                 if let Some(ix) = &mut self.index {
                     ix.remove(slot);
@@ -791,10 +770,10 @@ impl Table {
         self.indexed_rows = n;
         self.index = None;
         if opts.lists && n <= opts.max_list_rows {
-            let Some((dim, data)) = cache.vectors(col) else {
+            let Some(vectors) = cache.vectors(col) else {
                 return;
             };
-            let mut ix = Ivf::build(dim, data, &cache.live);
+            let mut ix = Ivf::build(vectors, &cache.live);
             let order = ix.slot_order(cache.live.len());
             cache.permute(&order);
             let mut new_slot = vec![NO_SLOT; order.len()];
@@ -808,8 +787,8 @@ impl Table {
             self.index = Some(ix);
         }
         if opts.codes {
-            if let Some((dim, data)) = cache.vectors(col) {
-                self.codes = Some(Sq8::build(dim, data, &cache.live));
+            if let Some(vectors) = cache.vectors(col) {
+                self.codes = Some(Sq8::build(vectors, &cache.live));
             }
         }
     }
@@ -1279,7 +1258,7 @@ mod tests {
                 if let Some(slot) = slots.remove(&pk) {
                     cache.remove(slot);
                 }
-                slots.insert(pk, cache.insert(pk, row(pk, &s, step)));
+                slots.insert(pk, cache.insert(pk, &row(pk, &s, step)));
                 model.insert(pk, row(pk, &s, step));
             }
         }

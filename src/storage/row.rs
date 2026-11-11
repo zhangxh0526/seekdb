@@ -7,7 +7,7 @@
 use super::catalog::TableDef;
 use super::codec::{self, Reader};
 use crate::error::DbResult;
-use crate::types::{from_millionths, millionths, DataType, Value};
+use crate::types::{extend_from_millionths, put_millionths, DataType, Value, MILLIONTHS_BYTES};
 use crate::{bail, db_err};
 
 const VECTOR_F32: u8 = 0;
@@ -44,8 +44,9 @@ pub fn decode_row(def: &TableDef, pk: i64, bytes: &[u8]) -> DbResult<Vec<Value>>
             DataType::Varchar(_) => Value::Str(r.str()?.to_string()),
             DataType::Vector(dim) => Value::Vector(match r.u8()? {
                 VECTOR_MILLIONTHS => {
-                    let raw = r.take(dim as usize * 3)?;
-                    raw.as_chunks::<3>().0.iter().map(|&[a, b, c]| from_millionths(u32::from_le_bytes([a, b, c, 0]))).collect()
+                    let mut v = Vec::with_capacity(dim as usize);
+                    extend_from_millionths(r.take(dim as usize * MILLIONTHS_BYTES)?, &mut v);
+                    v
                 }
                 VECTOR_F32 => {
                     let raw = r.take(dim as usize * 4)?;
@@ -61,17 +62,11 @@ pub fn decode_row(def: &TableDef, pk: i64, bytes: &[u8]) -> DbResult<Vec<Value>>
     Ok(row)
 }
 
-/// The check pass has no stores, so it vectorizes; codes are written only
-/// once every element is known to have one.
 fn put_vector(out: &mut Vec<u8>, v: &[f32]) {
-    if v.iter().fold(true, |ok, &x| ok & millionths(x).1) {
-        let at = out.len();
-        out.resize(at + 1 + v.len() * 3, 0);
-        out[at] = VECTOR_MILLIONTHS;
-        for (b, &x) in out[at + 1..].as_chunks_mut::<3>().0.iter_mut().zip(v) {
-            b.copy_from_slice(&millionths(x).0.to_le_bytes()[..3]);
-        }
-    } else {
+    let at = out.len();
+    out.resize(at + 1 + v.len() * MILLIONTHS_BYTES, VECTOR_MILLIONTHS);
+    if !put_millionths(v, &mut out[at + 1..]) {
+        out.truncate(at);
         out.reserve(1 + v.len() * 4);
         out.push(VECTOR_F32);
         for f in v {

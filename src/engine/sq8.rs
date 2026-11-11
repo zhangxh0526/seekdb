@@ -14,6 +14,7 @@
 
 use std::ops::Range;
 
+use super::veccol::VecCol;
 use crate::vector::ssd_i8_scalar;
 #[cfg(target_arch = "x86_64")]
 use crate::vector::{ssd_i8_avx2, ssd_i8_short_avx2, SHORT_CODES};
@@ -35,13 +36,14 @@ pub struct Sq8 {
 }
 
 impl Sq8 {
-    /// Codes for every slot of a vector column (`data` holds `dim` floats per
-    /// slot), with the step fitted to the live rows.
-    pub fn build(dim: usize, data: &[f32], live: &[bool]) -> Sq8 {
+    /// Codes for every slot of a vector column, with the step fitted to the
+    /// live rows.
+    pub fn build(vectors: &VecCol, live: &[bool]) -> Sq8 {
+        let dim = vectors.dim();
+        let mut buf = Vec::with_capacity(dim);
         let max = (0..live.len())
             .filter(|&s| live[s])
-            .flat_map(|s| &data[s * dim..][..dim])
-            .fold(0f32, |m, &x| m.max(x.abs()));
+            .fold(0f32, |m, s| vectors.row(s, &mut buf).iter().fold(m, |m, &x| m.max(x.abs())));
         let step = if max > 0.0 { max as f64 / 127.0 } else { 1.0 };
         let mut sq = Sq8 {
             dim,
@@ -51,7 +53,7 @@ impl Sq8 {
             max_resid: 0.0,
         };
         for s in 0..live.len() {
-            sq.set(s as u32, &data[s * dim..][..dim]);
+            sq.set(s as u32, vectors.row(s, &mut buf));
         }
         sq
     }
@@ -272,7 +274,7 @@ mod tests {
                 let mut data: Vec<f32> = (0..n * dim).map(|_| rng.unit() * scale).collect();
                 let mut live = vec![true; n];
                 live[7] = false;
-                let mut sq = Sq8::build(dim, &data, &live);
+                let mut sq = Sq8::build(&VecCol::from_floats(dim, &data), &live);
                 for s in (0..n).step_by(11) {
                     let v: Vec<f32> = (0..dim).map(|_| rng.unit() * scale * 50.0).collect();
                     data[s * dim..][..dim].copy_from_slice(&v);
@@ -298,11 +300,11 @@ mod tests {
     #[test]
     fn identical_rows_are_kept() {
         let v = [0.25f32, -1.0, 3.5];
-        let sq = Sq8::build(3, &v, &[true]);
+        let sq = Sq8::build(&VecCol::from_floats(3, &v), &[true]);
         let mut q = sq.query(&v);
         q.set_kth(0.0);
         assert!(!q.prunes(0));
-        let zero = Sq8::build(2, &[0.0, 0.0], &[true]);
+        let zero = Sq8::build(&VecCol::from_floats(2, &[0.0, 0.0]), &[true]);
         let mut q = zero.query(&[0.0, 0.0]);
         q.set_kth(0.0);
         assert!(!q.prunes(0));

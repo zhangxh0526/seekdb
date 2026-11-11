@@ -184,7 +184,7 @@ fn differs(row: &RowView<'_>, sets: &[(usize, Value)]) -> bool {
     sets.iter().any(|(col, v)| match (row.get(*col), v) {
         (ValRef::Int(a), Value::Int(b)) => a != *b,
         (ValRef::Str(a), Value::Str(b)) => a != b,
-        (ValRef::Vector(a), Value::Vector(b)) => a != b.as_slice(),
+        (ValRef::Vector(a), Value::Vector(b)) => a.floats(&mut Vec::new()) != b.as_slice(),
         _ => true,
     })
 }
@@ -363,6 +363,7 @@ pub(super) fn select(log: &LogStore, tables: &Tables, txn: &Txn, sel: &Select, s
     // TopK: ORDER BY L2_DISTANCE(...) ASC LIMIT k; ties go to the smaller pk.
     if let ([(CExpr::Dist { col, query }, false)], Some(limit)) = (order.as_slice(), limit) {
         let mut top = TopK::new(query, offset.saturating_add(limit));
+        let mut floats = Vec::new();
         let whole = *range.start() == i64::MIN && *range.end() == i64::MAX;
         if whole && table.is_cached() {
             // Uncommitted rows first: they are few and fill the heap early.
@@ -371,7 +372,7 @@ pub(super) fn select(log: &LogStore, tables: &Tables, txn: &Txn, sel: &Select, s
                     let row = RowView::new(pk, values);
                     if preds.iter().all(|p| p.test(&row)) && passes_rest(&row) {
                         if let ValRef::Vector(v) = row.get(*col) {
-                            top.offer(pk, v);
+                            top.offer(pk, v.floats(&mut floats));
                         }
                     }
                 }
@@ -382,7 +383,7 @@ pub(super) fn select(log: &LogStore, tables: &Tables, txn: &Txn, sel: &Select, s
             scan_visible_unordered(table, log, changes, range, &preds, |row| {
                 if passes_rest(&row) {
                     if let ValRef::Vector(v) = row.get(*col) {
-                        top.offer(row.pk, v);
+                        top.offer(row.pk, v.floats(&mut floats));
                     }
                 }
                 Ok(true)

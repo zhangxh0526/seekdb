@@ -176,7 +176,7 @@ impl CExpr {
             CExpr::Float(f) => Scalar::Float(*f),
             CExpr::Str(s) => Scalar::Str(s),
             CExpr::Dist { col, query } => Scalar::Float(match row.get(*col) {
-                ValRef::Vector(v) => l2_distance(v, query),
+                ValRef::Vector(v) => l2_distance(v.floats(&mut Vec::new()), query),
                 _ => 0.0,
             }),
             CExpr::ConstDist(d) => Scalar::Float(*d),

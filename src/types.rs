@@ -200,7 +200,129 @@ pub fn millionths(x: f32) -> (u32, bool) {
 /// the parser does for `d.dddddd`, then the sign bit.
 #[inline(always)]
 pub fn from_millionths(code: u32) -> f32 {
-    with_sign((code & MILLIONTHS_MAX) as f32 / 1e6, code >> 23 & 1 != 0)
+    with_sign((code & MILLIONTHS_MAX) as i32 as f32 / 1e6, code >> 23 & 1 != 0)
+}
+
+/// Bytes of a stored `millionths` code (LE).
+pub const MILLIONTHS_BYTES: usize = 3;
+
+/// Stores the codes of `v` in the first `MILLIONTHS_BYTES * v.len()` bytes
+/// of `out` and returns whether every element has one; if not, those bytes
+/// hold nothing useful.
+#[inline]
+pub fn put_millionths(v: &[f32], out: &mut [u8]) -> bool {
+    let out = &mut out[..v.len() * MILLIONTHS_BYTES];
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        // SAFETY: the CPU supports AVX2, checked just above.
+        let (done, ok) = unsafe { put_millionths_avx2(v, out) };
+        return put_millionths_scalar(&v[done..], &mut out[done * MILLIONTHS_BYTES..]) & ok;
+    }
+    put_millionths_scalar(v, out)
+}
+
+pub(crate) fn put_millionths_scalar(v: &[f32], out: &mut [u8]) -> bool {
+    let mut ok = true;
+    for (b, &x) in out.as_chunks_mut::<MILLIONTHS_BYTES>().0.iter_mut().zip(v) {
+        let (code, good) = millionths(x);
+        ok &= good;
+        b.copy_from_slice(&code.to_le_bytes()[..MILLIONTHS_BYTES]);
+    }
+    ok
+}
+
+/// `millionths` eight elements at a time, in the same arithmetic, the codes
+/// packed into 24 bytes. A magnitude past i32 (or NaN) converts to
+/// 0x80000000, which has bits outside `MILLIONTHS_MAX` and so no code, as
+/// the scalar path's saturated value has none. Returns how many elements it
+/// stored (all but the last `v.len() % 8`) and whether each had a code.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn put_millionths_avx2(v: &[f32], out: &mut [u8]) -> (usize, bool) {
+    use std::arch::x86_64::*;
+    debug_assert!(out.len() >= v.len() * MILLIONTHS_BYTES);
+    let magnitude = _mm256_set1_epi32(MILLIONTHS_MAX as i32);
+    let (million_f64, half) = (_mm256_set1_pd(1e6), _mm256_set1_pd(0.5));
+    let million = _mm256_set1_ps(1e6);
+    // Each lane's three low bytes to the front of its half, then the halves'
+    // twelve bytes next to each other.
+    let pack = _mm256_setr_epi8(
+        0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1, 0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1,
+    );
+    let join = _mm256_setr_epi32(0, 1, 2, 4, 5, 6, 3, 7);
+    let mut good = _mm256_set1_epi32(-1);
+    let mut i = 0;
+    while i + 8 <= v.len() {
+        let x = _mm256_loadu_ps(v.as_ptr().add(i));
+        let bits = _mm256_castps_si256(x);
+        let abs = _mm256_and_ps(x, _mm256_castsi256_ps(_mm256_set1_epi32(i32::MAX)));
+        let round = |h: __m128| _mm256_cvttpd_epi32(_mm256_add_pd(_mm256_mul_pd(_mm256_cvtps_pd(h), million_f64), half));
+        let m = _mm256_set_m128i(round(_mm256_extractf128_ps::<1>(abs)), round(_mm256_castps256_ps128(abs)));
+        let mag = _mm256_and_si256(m, magnitude);
+        let sign = _mm256_slli_epi32::<31>(_mm256_srli_epi32::<31>(bits));
+        let back = _mm256_or_si256(_mm256_castps_si256(_mm256_div_ps(_mm256_cvtepi32_ps(mag), million)), sign);
+        good = _mm256_and_si256(good, _mm256_and_si256(_mm256_cmpeq_epi32(m, mag), _mm256_cmpeq_epi32(back, bits)));
+        let code = _mm256_or_si256(mag, _mm256_srli_epi32::<8>(sign));
+        let packed = _mm256_permutevar8x32_epi32(_mm256_shuffle_epi8(code, pack), join);
+        let p = out.as_mut_ptr().add(i * MILLIONTHS_BYTES);
+        _mm_storeu_si128(p as *mut __m128i, _mm256_castsi256_si128(packed));
+        _mm_storel_epi64(p.add(16) as *mut __m128i, _mm256_extracti128_si256::<1>(packed));
+        i += 8;
+    }
+    (i, _mm256_movemask_epi8(good) == -1)
+}
+
+/// Appends the elements whose codes `codes` holds.
+#[inline]
+pub fn extend_from_millionths(codes: &[u8], out: &mut Vec<f32>) {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("avx2") {
+        out.reserve(codes.len() / MILLIONTHS_BYTES);
+        // SAFETY: the CPU supports AVX2, checked just above, and `out` has
+        // room for every element of `codes`, of which the call writes the
+        // first `done`.
+        let done = unsafe {
+            let done = from_millionths_avx2(codes, out.as_mut_ptr().add(out.len()));
+            out.set_len(out.len() + done);
+            done
+        };
+        return extend_from_millionths_scalar(&codes[done * MILLIONTHS_BYTES..], out);
+    }
+    extend_from_millionths_scalar(codes, out)
+}
+
+pub(crate) fn extend_from_millionths_scalar(codes: &[u8], out: &mut Vec<f32>) {
+    let codes = codes.as_chunks::<MILLIONTHS_BYTES>().0;
+    out.extend(codes.iter().map(|&[a, b, c]| from_millionths(u32::from_le_bytes([a, b, c, 0]))));
+}
+
+/// Eight codes per step: 32 bytes loaded, the first 24 spread into eight
+/// u32 lanes, then the scalar path's division and sign bit, lane by lane.
+/// Stops while 32 bytes still fit, so the last ten codes or fewer are left
+/// to the caller; returns how many it wrote to `dst`.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn from_millionths_avx2(codes: &[u8], dst: *mut f32) -> usize {
+    use std::arch::x86_64::*;
+    // Dwords 0-2 (codes 0-3) to the low lane, dwords 3-5 (codes 4-7) to the
+    // high one, then each code's three bytes to a lane of its own.
+    let halves = _mm256_setr_epi32(0, 1, 2, 0, 3, 4, 5, 0);
+    let spread = _mm256_setr_epi8(
+        0, 1, 2, -1, 3, 4, 5, -1, 6, 7, 8, -1, 9, 10, 11, -1, 0, 1, 2, -1, 3, 4, 5, -1, 6, 7, 8, -1, 9, 10, 11, -1,
+    );
+    let magnitude = _mm256_set1_epi32(MILLIONTHS_MAX as i32);
+    let sign = _mm256_set1_epi32(1 << 23);
+    let million = _mm256_set1_ps(1e6);
+    let mut i = 0;
+    while (i + 8) * MILLIONTHS_BYTES + 8 <= codes.len() {
+        let raw = _mm256_loadu_si256(codes.as_ptr().add(i * MILLIONTHS_BYTES) as *const __m256i);
+        let c = _mm256_shuffle_epi8(_mm256_permutevar8x32_epi32(raw, halves), spread);
+        let mag = _mm256_div_ps(_mm256_cvtepi32_ps(_mm256_and_si256(c, magnitude)), million);
+        let neg = _mm256_slli_epi32::<8>(_mm256_and_si256(c, sign));
+        _mm256_storeu_ps(dst.add(i), _mm256_or_ps(mag, _mm256_castsi256_ps(neg)));
+        i += 8;
+    }
+    i
 }
 
 /// For `d.dddddd` followed by a byte that cannot continue a number (the
@@ -451,6 +573,73 @@ mod tests {
             f32::MIN_POSITIVE, f32::from_bits(1), near(0.1, true), near(-0.1, false), near(8.388607, true),
         ] {
             assert!(!millionths(x).1, "{x:e}");
+        }
+    }
+
+    /// Codes written eight at a time equal the scalar path's for the
+    /// elements of every code, and both refuse the same vectors: floats next
+    /// to coded ones, special values, magnitudes past the codes and past
+    /// i32, at every position of every length up to 40.
+    #[test]
+    fn writing_codes() {
+        let floats: Vec<f32> = (0..1u32 << 24).map(from_millionths).collect();
+        let (mut fast, mut slow) = (vec![0u8; 3 << 16], vec![0u8; 3 << 16]);
+        for chunk in floats.chunks(1 << 16) {
+            assert!(put_millionths(chunk, &mut fast));
+            assert!(put_millionths_scalar(chunk, &mut slow));
+            assert_eq!(fast, slow);
+        }
+        let near = |x: f32, up: bool| f32::from_bits(if up { x.to_bits() + 1 } else { x.to_bits() - 1 });
+        let bad = [
+            near(0.1, true), near(-0.1, false), near(8.388607, true), 8.388608, 1e-7, f32::MIN_POSITIVE,
+            f32::from_bits(1), f32::NAN, -f32::NAN, f32::INFINITY, f32::NEG_INFINITY, 2147.4836, 2147.4837, 3e9, f32::MAX,
+        ];
+        let mut out = vec![0u8; 40 * MILLIONTHS_BYTES];
+        for len in 0..=40usize {
+            let v: Vec<f32> = floats[4_000_000..][..len].to_vec();
+            assert!(put_millionths(&v, &mut out) && put_millionths_scalar(&v, &mut out), "{len}");
+            for at in 0..len {
+                for &b in &bad {
+                    let mut w = v.clone();
+                    w[at] = b;
+                    assert!(!put_millionths(&w, &mut out), "{b:e} at {at} of {len}");
+                    assert!(!put_millionths_scalar(&w, &mut out), "{b:e} at {at} of {len}");
+                }
+            }
+        }
+    }
+
+    /// Every 24-bit code, and every length from 0 to 40 from four starting
+    /// bytes, decode to the scalar path's bits; `put_millionths` writes the
+    /// decoded elements back as the same bytes.
+    #[test]
+    fn decoding_codes() {
+        let all: Vec<u8> = (0..1u32 << 24).flat_map(|c| c.to_le_bytes().into_iter().take(MILLIONTHS_BYTES)).collect();
+        let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let (mut fast, mut slow) = (Vec::new(), Vec::new());
+        for chunk in all.chunks(3 << 16) {
+            fast.clear();
+            slow.clear();
+            extend_from_millionths(chunk, &mut fast);
+            extend_from_millionths_scalar(chunk, &mut slow);
+            assert_eq!(bits(&fast), bits(&slow));
+        }
+        for len in 0..=40 {
+            for off in 0..4 {
+                let codes = &all[(off + 1_000_003) * MILLIONTHS_BYTES..][..len * MILLIONTHS_BYTES];
+                let mut got = vec![7.0];
+                extend_from_millionths(codes, &mut got);
+                let mut want = vec![7.0];
+                extend_from_millionths_scalar(codes, &mut want);
+                assert_eq!(bits(&got), bits(&want), "{len} at {off}");
+                let mut back = vec![0; codes.len()];
+                assert!(put_millionths(&got[1..], &mut back));
+                assert_eq!(back, codes, "{len} at {off}");
+                if len > 0 {
+                    got[len] = 0.1 + 1e-7;
+                    assert!(!put_millionths(&got[1..], &mut back), "{len} at {off}");
+                }
+            }
         }
     }
 

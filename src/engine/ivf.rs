@@ -7,6 +7,7 @@
 //! lists are skipped; on uniform data the bounds prune nothing and the scan
 //! visits every row, paying only the distances to the centroids.
 
+use super::veccol::VecCol;
 use crate::vector::{l2_distance, l2_sq_f32, F32Bound};
 
 const NONE: u32 = u32::MAX;
@@ -28,25 +29,28 @@ pub struct Ivf {
 }
 
 impl Ivf {
-    /// About sqrt(n) lists over the live slots of a vector column (`data`
-    /// holds `dim` floats per slot). Deterministic for the same input.
-    pub fn build(dim: usize, data: &[f32], live: &[bool]) -> Ivf {
+    /// About sqrt(n) lists over the live slots of a vector column.
+    /// Deterministic for the same input.
+    pub fn build(vectors: &VecCol, live: &[bool]) -> Ivf {
+        let dim = vectors.dim();
         let slots: Vec<u32> = (0..live.len()).filter(|&s| live[s]).map(|s| s as u32).collect();
         let n = slots.len();
         let nlist = ((n as f64).sqrt().round() as usize).clamp(1, 1024);
-        let row = |s: u32| &data[s as usize * dim..][..dim];
+        // Rows in codes are decoded one at a time, never the whole column.
+        let mut buf = Vec::with_capacity(dim);
         let sample = spread(&slots, (nlist * SAMPLE_PER_LIST).min(n));
-        let mut centroids: Vec<f32> = spread(&sample, nlist).iter().flat_map(|&s| row(s).to_vec()).collect();
+        let mut centroids: Vec<f32> =
+            spread(&sample, nlist).iter().flat_map(|&s| vectors.row(s as usize, &mut buf).to_vec()).collect();
         let mut assign = vec![0u32; sample.len()];
         for _ in 0..KMEANS_ROUNDS {
             for (a, &s) in assign.iter_mut().zip(&sample) {
-                *a = nearest(&centroids, dim, row(s));
+                *a = nearest(&centroids, dim, vectors.row(s as usize, &mut buf));
             }
             let mut sum = vec![0f64; nlist * dim];
             let mut count = vec![0usize; nlist];
             for (&a, &s) in assign.iter().zip(&sample) {
                 count[a as usize] += 1;
-                for (acc, &x) in sum[a as usize * dim..][..dim].iter_mut().zip(row(s)) {
+                for (acc, &x) in sum[a as usize * dim..][..dim].iter_mut().zip(vectors.row(s as usize, &mut buf)) {
                     *acc += f64::from(x);
                 }
             }
@@ -65,7 +69,7 @@ impl Ivf {
             list_of: vec![NONE; live.len()],
         };
         for &s in &slots {
-            ivf.insert(s, row(s));
+            ivf.insert(s, vectors.row(s as usize, &mut buf));
         }
         ivf
     }
@@ -195,7 +199,7 @@ mod tests {
         for s in (0..n).step_by(7) {
             live[s] = false;
         }
-        let mut ivf = Ivf::build(dim, &data, &live);
+        let mut ivf = Ivf::build(&VecCol::from_floats(dim, &data), &live);
         for s in (0..n).step_by(5) {
             if live[s] {
                 ivf.remove(s as u32);
