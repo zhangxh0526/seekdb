@@ -23,11 +23,6 @@ use crate::vector::{ssd_i8_avx2, ssd_i8_short_avx2, SHORT_CODES};
 /// matters.
 const PAD: f64 = 1e-9;
 
-/// Codes the AVX2 scan sums before checking whether a longer row is already
-/// out of reach. Every term is a square, so a partial sum above `quick`
-/// means the whole one is too.
-const HEAD: usize = 64;
-
 pub struct Sq8 {
     dim: usize,
     step: f64,
@@ -207,25 +202,14 @@ impl Sq8Query<'_> {
         }
     }
 
-    /// The code distance squared of `slot`, or, when the first `HEAD` codes
-    /// alone exceed `quick`, their sum: above `quick` exactly when the whole
-    /// distance is, so `may_place` decides the same. Called only from the
-    /// AVX2 loops above and always inlined into them, where the kernels
-    /// inline too; with two stages LLVM otherwise left it out of line, one
-    /// call per row (`#[inline(always)]` cannot go with `#[target_feature]`).
     #[cfg(target_arch = "x86_64")]
-    #[inline(always)]
+    #[target_feature(enable = "avx2")]
+    #[inline]
     unsafe fn ssd_avx2(&self, slot: usize) -> u64 {
         let dim = self.sq.dim;
         let row = &self.sq.codes[slot * dim..][..dim];
-        if dim <= HEAD {
+        if dim < SHORT_CODES {
             ssd_i8_short_avx2(&self.codes, row)
-        } else if dim < SHORT_CODES {
-            let head = ssd_i8_short_avx2(&self.codes[..HEAD], &row[..HEAD]);
-            if head > self.quick {
-                return head;
-            }
-            head + ssd_i8_short_avx2(&self.codes[HEAD..], &row[HEAD..])
         } else {
             ssd_i8_avx2(&self.codes, row)
         }
@@ -283,7 +267,7 @@ mod tests {
     fn never_prunes_a_row_that_could_place() {
         let mut rng = Rng(5);
         for &scale in &[1.0f32, 1e-3, 1e4, 1e-30, 1e30] {
-            for dim in [1usize, 3, 16, 17, 64, 65, 96, 128, 200] {
+            for dim in [1usize, 3, 16, 17, 128] {
                 let n = 300;
                 let mut data: Vec<f32> = (0..n * dim).map(|_| rng.unit() * scale).collect();
                 let mut live = vec![true; n];
@@ -309,45 +293,6 @@ mod tests {
                 assert!(pruned > 0, "scale {scale} dim {dim}: the bound never pruned");
             }
         }
-    }
-
-    /// The AVX2 scans, which stop after `HEAD` codes for rows already out of
-    /// reach, keep exactly the slots the scalar scan keeps from the whole
-    /// sum, and do stop early for some rows.
-    #[test]
-    fn early_exit_keeps_what_the_whole_sum_keeps() {
-        if !std::arch::is_x86_feature_detected!("avx2") {
-            return;
-        }
-        let mut rng = Rng(9);
-        let mut cut = 0;
-        for dim in [64usize, 65, 96, 128, 200] {
-            let n = 400;
-            let data: Vec<f32> = (0..n * dim).map(|_| rng.unit()).collect();
-            let sq = Sq8::build(dim, &data, &vec![true; n]);
-            let slots: Vec<u32> = (0..n as u32).collect();
-            for _ in 0..20 {
-                let q: Vec<f32> = (0..dim).map(|_| rng.unit()).collect();
-                let mut dists: Vec<f64> = (0..n).map(|s| l2_distance(&q, &data[s * dim..][..dim])).collect();
-                dists.sort_by(f64::total_cmp);
-                for kth in [dists[0], dists[9], dists[n / 2]] {
-                    let mut qq = sq.query(&q);
-                    qq.set_kth(kth);
-                    let (mut iter, mut scattered, mut scalar) = (Vec::new(), Vec::new(), Vec::new());
-                    qq.keep(&slots, false, &mut iter);
-                    qq.keep(&slots, true, &mut scattered);
-                    qq.keep_scalar(slots.iter().map(|&s| s as usize), &mut scalar);
-                    assert_eq!(iter, scalar, "dim {dim} kth {kth}");
-                    assert_eq!(scattered, scalar, "dim {dim} kth {kth}");
-                    if dim > HEAD {
-                        cut += (0..n)
-                            .filter(|&s| ssd_i8_scalar(&qq.codes[..HEAD], &sq.codes[s * dim..][..HEAD]) > qq.quick)
-                            .count();
-                    }
-                }
-            }
-        }
-        assert!(cut > 0, "no row stopped after {HEAD} codes");
     }
 
     #[test]
