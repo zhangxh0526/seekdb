@@ -60,7 +60,7 @@ impl<'q> TopK<'q> {
         self.push((Dist(l2_distance(v, self.query)), pk));
     }
 
-    #[inline]
+    #[inline(always)]
     fn push(&mut self, key: (Dist, i64)) {
         if self.heap.len() < self.k {
             self.heap.push(key);

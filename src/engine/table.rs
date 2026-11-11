@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::ops::{Range, RangeInclusive};
 
 use super::expr::{holds, ColPred, PredValue};
-use super::helper;
+use super::helper::{self, Helper};
 use super::ivf::Ivf;
 use super::sq8::{Sq8, Sq8Query};
 use super::IndexOptions;
@@ -470,6 +470,10 @@ pub struct Table {
     filtered_lists: Cell<ListUse>,
     /// The same for unfiltered scans, kept only while they can be split.
     unfiltered_lists: Cell<ListUse>,
+    /// The helper thread, if any, and the table size from which unfiltered
+    /// scans use it, looked up once instead of at every query.
+    helper: Option<&'static Helper>,
+    split_rows: usize,
 }
 
 /// Average fraction of rows a filtered TopK through the lists visited, and
@@ -516,6 +520,7 @@ impl<'a> Offer<'a> {
         Offer { cache, col, codes, kth, kept: Vec::with_capacity(BLOCK) }
     }
 
+    #[inline(always)]
     fn run(&mut self, cand: Cand<'_>, top: &mut TopK<'_>, skip: &impl Fn(i64) -> bool, rest: &impl Fn(&RowView<'_>) -> bool) {
         let cache = self.cache;
         self.kept.clear();
@@ -566,7 +571,7 @@ impl Table {
     pub fn new(def: TableDef) -> Table {
         let cache = Some(RowCache::new(&def));
         let vector_col = def.columns.iter().position(|c| matches!(c.ty, DataType::Vector(_)));
-        Table { def, rows: BTreeMap::new(), cache, deferred: false, read: false, vector_col, index: None, codes: None, indexed_rows: 0, filtered_lists: Cell::default(), unfiltered_lists: Cell::default() }
+        Table { def, rows: BTreeMap::new(), cache, deferred: false, read: false, vector_col, index: None, codes: None, indexed_rows: 0, filtered_lists: Cell::default(), unfiltered_lists: Cell::default(), helper: helper::get(), split_rows: helper::min_rows() }
     }
 
     pub fn is_cached(&self) -> bool {
@@ -840,7 +845,7 @@ impl Table {
         // Unfiltered scans of a large table are split between two threads,
         // over the slots rather than the lists, so they take the lists only
         // while the lists prune.
-        let helper = if filtered || self.rows.len() < helper::min_rows() { None } else { helper::get() };
+        let helper = if filtered || self.rows.len() < self.split_rows { None } else { self.helper };
         let uses = if filtered { Some(&self.filtered_lists) } else { helper.map(|_| &self.unfiltered_lists) };
         let lists = self.index.as_ref().filter(|_| {
             let Some(uses) = uses else {
@@ -1031,7 +1036,7 @@ mod tests {
                 table.apply_delete(pk);
                 model.remove(&pk);
             }
-            assert!(table.rows.len() >= helper::min_rows());
+            assert!(table.rows.len() >= table.split_rows);
             if unpruned {
                 table.unfiltered_lists.set(ListUse { visited: 1.0, queries: 0 });
             }
